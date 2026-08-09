@@ -1,0 +1,136 @@
+<p align="center">
+  <img src="docs/images/readme-hero.jpg" alt="EIRVEN interface concept" width="100%">
+</p>
+
+<h1 align="center">E I R V E N</h1>
+<p align="center"><b>Живой voice-first ИИ-компаньон для Windows, который не только отвечает, но и действует.</b></p>
+<p align="center">Создатель: <b>Даниил</b></p>
+
+<p align="center">
+  <img alt="Windows" src="https://img.shields.io/badge/Windows-10%20%2F%2011-5ea8ff?style=for-the-badge">
+  <img alt="Python" src="https://img.shields.io/badge/Python-3.11--3.13-7b8cff?style=for-the-badge">
+  <img alt="License" src="https://img.shields.io/badge/License-MIT-d56cff?style=for-the-badge">
+  <img alt="Release" src="https://img.shields.io/badge/EIRVEN-1.2.2-65e8ff?style=for-the-badge">
+</p>
+
+## Что такое EIRVEN
+
+EIRVEN — локально-ориентированный персональный ИИ для Windows. Она активируется обращением **«Эрви»**, слушает фразу до конца, отвечает голосом и может выполнять действия в приложениях, браузере и системе. Главный интерфейс — живая liquid-glass сфера: в покое она мягкая, при активации становится ярче, во время размышления и речи меняет движение и показывает понятный статус без технической консоли.
+
+Публичная версия имеет одну цельную личность и один фирменный голос — **Бая**. Пол и мужские голосовые профили в продукте не выбираются.
+
+## Что умеет
+
+- Голосовая активация по слову **«Эрви»** с 5-секундным окном на начало фразы.
+- Дослушивание длинной мысли без обрыва по фиксированному таймеру.
+- Перебивание ответа: Эйрвен затухает и переключается на слушание.
+- Открытие приложений и сайтов, навигация по текущему интерфейсу.
+- Работа с Telegram Web: открыть чат, отправить сообщение, переиспользовать открытую вкладку.
+- Управление Яндекс Музыкой: воспроизведение, пауза, лайк/дизлайк и переходы по интерфейсу.
+- Действия на сайтах: разделы, поиск, карточки, корзина — по видимому состоянию страницы.
+- Системные команды Windows: громкость, окна, процессы и другие атомарные действия.
+- Длинные задачи и фоновые миссии с проверкой результата.
+- Desktop mini-mode: живая сфера поверх рабочего стола, выразительные глаза по состоянию и человеческие комментарии о текущем действии.
+- Обновления из **GitHub Releases** репозитория `FoxInDev/EIRVEN-AI`.
+
+> EIRVEN не выдаёт непроверенный side-effect за успех: отправка сообщения, добавление в корзину и другие commit-действия должны подтверждаться состоянием интерфейса.
+
+## Интерфейс
+
+### Живая сфера
+
+<p align="center"><img src="docs/images/interface-home.png" alt="EIRVEN home" width="86%"></p>
+
+Внутри сферы находится премиальный световой wordmark **E I R V E N**. Он становится ярче вместе со сферой, когда Эйрвен слушает, думает или говорит.
+
+### Настройки
+
+<p align="center"><img src="docs/images/interface-settings.png" alt="EIRVEN settings" width="72%"></p>
+
+Настройки разделены на **Общее / Голос / Внешний вид / Приватность / Обновления**. В «Общее» есть безопасная кнопка **Отключить EIRVEN**, во «Внешний вид» — отдельный переключатель живых глаз. Ручных переключателей эмоций, скорости речи, нейромузыки и developer-console нет — подача выбирается автоматически.
+
+### Первый запуск
+
+<p align="center"><img src="docs/images/interface-onboarding.png" alt="EIRVEN onboarding" width="90%"></p>
+
+Первый запуск короткий: имя Эйрвен → стиль общения → имя пользователя → запуск. Голос фиксирован на Бае.
+
+### Mini-mode
+
+<p align="center"><img src="docs/images/interface-mini-mode.png" alt="EIRVEN mini mode" width="82%"></p>
+
+На рабочем столе Эйрвен может просто оставаться рядом маленькой живой сферой. Глаза реагируют на listening / thinking / speaking / success, а комментарии оформлены как короткие liquid-glass карточки. Глаза и сами комментарии можно отключить отдельно.
+
+## Быстрая установка Windows
+
+<p align="center"><img src="docs/images/interface-installer.png" alt="EIRVEN installer" width="58%"></p>
+
+1. Открой **Releases** этого репозитория и скачай последний `EIRVEN-Windows-v*.zip`.
+2. Распакуй архив в обычную пользовательскую папку, например `C:\EIRVEN`. Не устанавливай в `Program Files`.
+3. Запусти `INSTALL EIRVEN AI.cmd`.
+4. Дождись окончания единой полосы установки. Установщик использует живую EIRVEN-сферу и официальный логотип. Если временно падает сеть, pip, модель или другой шаг, v1.2.2 автоматически повторяет его и при необходимости перезапускает bootstrap до трёх раз — уже скачанное не удаляется.
+5. После готовности EIRVEN запустится сама и откроет onboarding.
+6. Закончи знакомство и скажи: **«Эрви, привет»**.
+
+Подробно: **[docs/INSTALLATION_RU.md](docs/INSTALLATION_RU.md)**.
+
+## Естественное демо
+
+Готовый сценарий 2–3-минутного ролика с командами, паузами и планом кадров: **[docs/DEMO_SCRIPT_RU.md](docs/DEMO_SCRIPT_RU.md)**.
+
+## Обновления
+
+В разделе **Настройки → Обновления** EIRVEN обращается к GitHub Releases. Stable-канал использует последний стабильный релиз, preview-канал может показать prerelease. Если в релизе есть Windows ZIP, интерфейс предлагает скачать именно его.
+
+Подробнее: **[docs/UPDATES_RU.md](docs/UPDATES_RU.md)**.
+
+## Документация
+
+- [Установка Windows](docs/INSTALLATION_RU.md)
+- [Функции и ограничения](docs/FEATURES_RU.md)
+- [Архитектура](docs/ARCHITECTURE_RU.md)
+- [Приватность и безопасность](docs/PRIVACY_RU.md)
+- [Обновления через GitHub](docs/UPDATES_RU.md)
+- [Сценарий демонстрации](docs/DEMO_SCRIPT_RU.md)
+- [Публикация и релизы GitHub](docs/GITHUB_PUBLISH_RU.md)
+- [Диагностика](docs/TROUBLESHOOTING_RU.md)
+- [Release 1.2.2](docs/RELEASE_1.2.2_RU.md)
+- [Работа с обратной связью](docs/FEEDBACK_POLICY_RU.md)
+- [Целостность публичного репозитория](docs/REPOSITORY_INTEGRITY_RU.md)
+
+## Что нового в 1.2.2
+
+- resilient installer: повтор команд и автоматический restart bootstrap до 3 попыток;
+- официальный приложенный EIRVEN logo во всех продуктовых поверхностях и Windows icon;
+- живая high-resolution сфера уже на экране установки;
+- desktop companion с глазами и эмоциональными состояниями;
+- более аккуратные человеческие комментарии вместо технических статусов;
+- переключатель глаз;
+- кнопка безопасного выключения EIRVEN;
+- GitHub Releases/update metadata обновлены под 1.2.2.
+
+Полные заметки: **[docs/RELEASE_1.2.2_RU.md](docs/RELEASE_1.2.2_RU.md)**.
+
+## Разработка
+
+```powershell
+py -3.12 -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install -U pip
+pip install -e ".[dev,voice,desktop]"
+pytest -q
+```
+
+## Репозиторий
+
+Основной репозиторий: `FoxInDev/EIRVEN-AI`  
+Ветка релизов: `main`  
+Теги: `vMAJOR.MINOR.PATCH`
+
+## Автор
+
+**Даниил** — создатель EIRVEN.
+
+## Лицензия
+
+MIT. См. [LICENSE](LICENSE). Используемые сторонние компоненты перечислены в [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

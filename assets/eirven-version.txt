@@ -1,0 +1,28 @@
+VSVersionInfo(
+  ffi=FixedFileInfo(
+    filevers=(1, 2, 2, 4),
+    prodvers=(1, 2, 2, 4),
+    mask=0x3f,
+    flags=0x0,
+    OS=0x40004,
+    fileType=0x1,
+    subtype=0x0,
+    date=(0, 0)
+  ),
+  kids=[
+    StringFileInfo([
+      StringTable(
+        u'040904B0',
+        [StringStruct(u'CompanyName', u'EIRVEN'),
+         StringStruct(u'FileDescription', u'EIRVEN AI'),
+         StringStruct(u'FileVersion', u'1.2.2.4'),
+         StringStruct(u'InternalName', u'EIRVEN-AI'),
+         StringStruct(u'LegalCopyright', u'EIRVEN'),
+         StringStruct(u'OriginalFilename', u'EIRVEN-AI.exe'),
+         StringStruct(u'ProductName', u'EIRVEN AI'),
+         StringStruct(u'ProductVersion', u'1.2.2.4')]
+      )
+    ]),
+    VarFileInfo([VarStruct(u'Translation', [1033, 1200])])
+  ]
+)
