@@ -360,6 +360,51 @@ class MemoryStore:
                 return self.add(match.group(1).strip(), kind="user_fact", importance=4)
         return None
 
+    @staticmethod
+    def classify(content: str) -> tuple[str, int]:
+        """Classify an explicit memory without another model call."""
+        low = str(content or "").casefold().replace("ё", "е")
+        if re.search(r"\b(?:мама|папа|брат|сестра|друг|подруг|тимлид|учител|клиент|коллег)\w*\b", low):
+            return "relationship", 5
+        if re.search(r"\b(?:проект|репозитор|работаю\s+над|дедлайн|задач)\w*\b", low):
+            return "project", 5
+        if re.search(r"\b(?:люблю|нравится|предпочитаю|не\s+люблю|не\s+нравится|всегда\s+делай)\b", low):
+            return "preference", 4
+        if re.search(r"\b(?:обычно|кажд\w*\s+(?:день|недел)|по\s+утрам|по\s+вечерам|привычк)\w*\b", low):
+            return "habit", 4
+        if re.search(r"\b(?:починил|исправил|решение|сработало|маршрут)\w*\b", low):
+            return "solution", 4
+        return "user_fact", 4
+
+    def remember_structured(self, content: str, *, person: str = "") -> int:
+        kind, importance = self.classify(content)
+        return self.add(content, kind=kind, person=person, importance=importance)
+
+    def forget_matching(self, query: str, *, limit: int = 20) -> int:
+        subject = re.sub(r"\s+", " ", str(query or "")).strip()
+        if not subject:
+            return 0
+        if re.fullmatch(r"(?:все|всё|всю память|все обо мне|всё обо мне)", subject, re.I):
+            with self.db.connect() as conn:
+                cursor = conn.execute("DELETE FROM memories")
+                return max(0, int(cursor.rowcount or 0))
+        rows = self.search(subject, limit=max(1, min(limit, 30)))
+        tokens = [token for token in re.findall(r"[а-яёa-z0-9]{4,}", subject.casefold())]
+        deleted = 0
+        for row in rows:
+            content = str(row.get("content") or "").casefold()
+            if subject.casefold() in content or (tokens and sum(token in content for token in tokens) >= min(2, len(tokens))):
+                deleted += int(self.delete(int(row.get("id") or 0)))
+        return deleted
+
+    def profile(self, limit: int = 30) -> dict[str, list[str]]:
+        grouped: dict[str, list[str]] = {}
+        for row in self.list(limit=max(1, min(limit, 100))):
+            content = str(row.get("content") or "").strip()
+            if content:
+                grouped.setdefault(str(row.get("kind") or "fact"), []).append(content)
+        return grouped
+
     def prompt_context(self, query: str) -> str:
         items = self.search(query)
         if not items:

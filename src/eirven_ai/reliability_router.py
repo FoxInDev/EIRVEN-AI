@@ -13,6 +13,7 @@ class ReliabilityDecision:
     remainder: str = ""
     reason: str = ""
     confidence: float = 0.0
+    verb: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -34,10 +35,11 @@ class ReliabilityRouter:
         ("youtube", re.compile(r"\b(?:youtube|ютуб\w*)\b", re.I)),
         ("spotify", re.compile(r"\b(?:spotify|спотифай\w*)\b", re.I)),
         ("discord", re.compile(r"\b(?:discord|дискорд\w*)\b", re.I)),
+        ("mesh", re.compile(r"\b(?:м[эе]ш|mesh)\b", re.I)),
     )
     ACTION = re.compile(
         r"\b(?:открой|запусти|зайди|перейди|найди|отыщи|добавь|положи|отправь|ответь|"
-        r"напиши|включи|выключи|поставь|продолжи|нажми|выбери|прокрути|полистай)\b",
+        r"напиши|посмотри|проверь|прочитай|включи|выключи|поставь|продолжи|нажми|выбери|прокрути|полистай|удали|переустанови|почини|исправь)\b",
         re.I,
     )
     PAGE_LOCAL = re.compile(
@@ -48,6 +50,14 @@ class ReliabilityRouter:
     SYSTEM_LOCAL = re.compile(
         r"\b(?:папк\w*|файл\w*|проводник|explorer|настройк\w*\s+windows|параметр\w*\s+windows|"
         r"браузер|меню\s+пуск|поиск\s+windows|командн\w*\s+строк\w*|powershell|терминал)\b",
+        re.I,
+    )
+    WEB_ENTITY = re.compile(
+        r"^(?:кворк|kwork|золотое\s+яблоко|goldapple|ozon|wildberries|авито|avito)$",
+        re.I,
+    )
+    AMBIGUOUS_BRAND = re.compile(
+        r"^(?:microsoft|майкрософт|google|гугл|яндекс|yandex|apple|эппл)$",
         re.I,
     )
 
@@ -96,7 +106,11 @@ class ReliabilityRouter:
         mentioned = self.apps(clean)
         # Bounded collection work (all unread chats/messages) is a mission even when it
         # names only one app.  A one-recipient fast path must never steal this loop.
-        if re.search(r"\b(?:все|всем|кажд\w*)\b.{0,80}\b(?:непрочитан\w*|чат\w*|сообщен\w*)", clean, re.I) and re.search(r"\b(?:ответ|напиш|обработ)\w*", clean, re.I):
+        collection = bool(
+            re.search(r"\b(?:все|всем|кажд\w*)\b.{0,80}\b(?:непрочитан\w*|чат\w*|сообщен\w*)", clean, re.I)
+            or re.search(r"\bвсем\b.{0,80}\bкому\b.{0,40}\b(?:я\s+)?не\s+(?:ответил|ответила|написал|написала)\b", clean, re.I)
+        )
+        if collection and re.search(r"\b(?:ответ|напиш|обработ)\w*", clean, re.I):
             return ReliabilityDecision("mission", reason="bounded collection task", confidence=.99)
         explicit_app, tail = self._app_open(clean)
         if len(set(mentioned)) >= 2:
@@ -108,6 +122,10 @@ class ReliabilityRouter:
             if tail and re.search(r"\b(?:любое\s+видео|любой\s+ролик|любую\s+песн\w*|любой\s+трек)\b", tail, re.I):
                 return ReliabilityDecision("app_compound", app=explicit_app, remainder=tail, reason="explicit app with content request", confidence=.97)
             return ReliabilityDecision("app_open", app=explicit_app, reason="explicit app open", confidence=.99)
+
+        actions = len(self.ACTION.findall(clean))
+        if actions >= 3 or re.search(r"\b(?:потом|затем|после\s+этого|параллельно|одновременно)\b", clean):
+            return ReliabilityDecision("mission", reason="long-horizon structure", confidence=.96)
 
         # Page-local ownership is explicit.  This prevents ``open Golden Apple`` from
         # being interpreted as a fuzzy button in whatever browser page happens to be frontmost.
@@ -126,23 +144,62 @@ class ReliabilityRouter:
             if "на этом сайте" in clean or "на текущем сайте" in clean or "на этой странице" in clean or re.search(r"\bраздел\b", clean) or self.PAGE_LOCAL.fullmatch(target):
                 return ReliabilityDecision("page_navigation", target=target, reason="explicit current-page destination", confidence=.98)
 
-        # ``open <entity>`` with no app/site keyword is external navigation unless the
-        # object is a known page/system primitive.  The site resolver can then choose the
-        # official destination generically; no merchant-specific recipe is needed.
-        ext = re.fullmatch(r"(?:открой|запусти)\s+(.+)", clean, re.I)
+        # A bare request to start music is a media goal, not an application-name lookup.
+        # It uses the configured/default music surface and is therefore deterministic.
+        if re.fullmatch(r"(?:включи|запусти|поставь|воспроизведи)\s+(?:мне\s+)?(?:музык\w*|песн\w*|трек\w*)", clean, re.I):
+            return ReliabilityDecision("media_start", app="yandex_music", reason="generic music playback", confidence=.98, verb="включи")
+
+        # Player transport/control phrases must remain controls even while a media page
+        # is foreground.  Without this guard, ``поставь лайк`` and ``поставь на паузу``
+        # were misread as song titles and sent into Yandex search.
+        if re.search(r"\b(?:поставь\s+на\s+паузу|пауза|продолжи|играй|следующ\w*|предыдущ\w*)\b", clean):
+            return ReliabilityDecision("media", reason="transport command without new app", confidence=.94)
+
+        content = re.fullmatch(r"(?:включи|воспроизведи|поставь)\s+[«\"']?(.+?)[»\"']?", clean, re.I)
+        if content and re.search(r"(?:яндекс\s*музык|yandex\s*music|music\.yandex)", foreground_title, re.I):
+            target = content.group(1).strip()
+            player_control = bool(re.match(
+                r"^(?:на\s+)?(?:лайк|дизлайк|не\s+нравится|нравится|пауз\w*|поиск\w*|"
+                r"автовоспроизвед\w*|автоплей\w*|громк\w*|звук\w*)\b",
+                target, re.I,
+            ))
+            if not player_control:
+                return ReliabilityDecision("media_content", target=target, app="yandex_music", reason="foreground media context", confidence=.97, verb="включи")
+
+        explicit_application = re.fullmatch(
+            r"(открой|запусти|включи)\s+(?:приложение|программу)\s+(.+)", clean, re.I,
+        )
+        if explicit_application:
+            return ReliabilityDecision(
+                "application_open", target=explicit_application.group(2).strip(),
+                reason="explicit application noun", confidence=.99,
+                verb=explicit_application.group(1).casefold(),
+            )
+
+        # ``зайди в/на X`` describes navigation to a service.  Unlike ``открой X`` it
+        # has a strong web meaning and should never fuzzy-launch a Start-menu app.
+        enter = re.fullmatch(r"(зайди|перейди)\s+(?:в|на)\s+(.+)", clean, re.I)
+        if enter:
+            target = enter.group(2).strip()
+            if target and not self.PAGE_LOCAL.fullmatch(target) and not self.SYSTEM_LOCAL.search(target):
+                return ReliabilityDecision("external_open", target=target, reason="service navigation verb", confidence=.96, verb=enter.group(1).casefold())
+
+        # A bare entity can name a website, an installed app, or both.  Keep known web
+        # services fast; all other entities are resolved against the installed-app index
+        # by ChatService and clarified when both meanings remain plausible.
+        ext = re.fullmatch(r"(открой|запусти|включи)\s+(.+)", clean, re.I)
         if ext:
-            raw_target = ext.group(1).strip()
+            verb = ext.group(1).casefold()
+            raw_target = ext.group(2).strip()
             # Literal site/domain commands already have a mature deterministic opener with
             # verification.  Leave them to that handler; r22 only resolves bare entities.
             if re.match(r"^(?:мне\s+)?сайт\s+", raw_target, re.I) or re.search(r"(?:https?://|\b[a-z0-9-]+\.(?:ru|com|net|org|io|app|ai)\b)", raw_target, re.I):
                 return ReliabilityDecision("unknown", reason="literal site handled by site opener", confidence=.95)
             target = raw_target
             if target and not self.PAGE_LOCAL.fullmatch(target) and not self.SYSTEM_LOCAL.search(target):
-                return ReliabilityDecision("external_open", target=target, reason="named external entity", confidence=.90)
-
-        # Media ownership is only allowed when no explicit new app surface was requested.
-        if re.search(r"\b(?:поставь\s+на\s+паузу|пауза|продолжи|играй|воспроизведи|следующ\w*|предыдущ\w*)\b", clean):
-            return ReliabilityDecision("media", reason="transport command without new app", confidence=.94)
+                if self.WEB_ENTITY.fullmatch(target):
+                    return ReliabilityDecision("external_open", target=target, reason="known web service", confidence=.95, verb=verb)
+                return ReliabilityDecision("contextual_open", target=target, reason="bare entity requires app/web resolution", confidence=.90, verb=verb)
 
         actions = len(self.ACTION.findall(clean))
         if actions >= 3 or re.search(r"\b(?:потом|затем|после\s+этого|параллельно|одновременно)\b", clean):

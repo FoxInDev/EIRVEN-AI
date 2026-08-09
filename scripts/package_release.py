@@ -9,7 +9,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 
 EXCLUDED_DIRS = {
-    ".git", ".github", ".venv", "venv", "build", "dist", "release", "tests",
+    ".git", ".github", ".venv", "venv", "build", "dist", "release",
     "__pycache__", ".pytest_cache", ".ruff_cache", "models", "logs",
 }
 EXCLUDED_FILES = {
@@ -41,7 +41,7 @@ def sha256(path: Path) -> str:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Build a clean EIRVEN Windows release archive")
-    parser.add_argument("--version", default="v1.2.2")
+    parser.add_argument("--version", default="v1.4.0-r26-COGNITIVE-AGENT")
     parser.add_argument("--output", default=str(ROOT / "release"))
     args = parser.parse_args()
 

@@ -180,7 +180,10 @@ class LauncherWindow:
                 _show_orb(port); time.sleep(.25); self.done(); return
 
             python = _installed_python()
-            marker = APP_ROOT / ".installed-v1.2.2-public"
+            # r23 intentionally has a new marker.  Extracting this release over an older
+            # v1.2.2 install must run the idempotent upgrade once so the newly named EXE
+            # is rebuilt with the new PE icon instead of keeping a cached purple binary.
+            marker = APP_ROOT / ".installed-v1.2.2-r24"
             if python is None or not marker.exists():
                 first_install = True
                 self.set("Первый запуск", "Устанавливаю недостающие компоненты.")

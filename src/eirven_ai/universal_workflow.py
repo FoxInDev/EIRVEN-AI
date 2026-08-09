@@ -56,7 +56,8 @@ class UniversalWorkflowEngine:
         self.tools = services.tools
         self.gateway = services.gateway
         self.operator = services.desktop_operator
-        self._lock = threading.RLock()
+        self._lock = getattr(services, "desktop_lock", None) or threading.RLock()
+        self._desktop_lock = self._lock
 
     def _trace(self, event: str, **data: Any) -> None:
         try:
@@ -1347,7 +1348,14 @@ class UniversalWorkflowEngine:
             )
             self._trace("UNIVERSAL_GOAL_BEGIN", task=task, index=index+1, goal=spec)
             try:
-                result = self._execute_goal(spec, execute_direct, stop_event=stop_event)
+                # UI work from every engine is serialized on the same physical-desktop
+                # lock.  A stale model response can no longer click into a newer task.
+                with self._desktop_lock:
+                    if stop_event and stop_event.is_set():
+                        result = {"ok": False, "cancelled": True, "completed": False,
+                                  "answer": "Остановлено пользователем.", "verified": False}
+                    else:
+                        result = self._execute_goal(spec, execute_direct, stop_event=stop_event)
             except TaskNeedsUser as exc:
                 checkpoint = {"task": task, "goals": goals, "index": index, "results": results, "prompt": exc.prompt, "replans": replans, "saved_at": time.time()}
                 if conversation_id:
@@ -1393,12 +1401,12 @@ class UniversalWorkflowEngine:
                 # A model timeout is infrastructure failure, not evidence that the plan is
                 # wrong. Do not immediately pay for another planner timeout on the same turn.
                 model_timed_out = "локальная модель не ответила" in self._norm(result.get("answer") or result.get("error") or "")
-                # One re-plan with fresh desktop state for genuine UI/tool surprises.
-                if replans < 1 and not model_timed_out:
+                # Up to three genuinely different plans, each from fresh desktop state.
+                if replans < 3 and not model_timed_out:
                     repair_query = (
                         f"Исходная задача: {task}\nНе удалось выполнить промежуточную цель: {spec.get('goal')}\n"
                         f"Ошибка/отчёт: {result.get('answer') or result.get('error')}\n"
-                        "Продолжи исходную задачу с текущего состояния и предложи только оставшиеся цели."
+                        f"Перепланирование {replans + 1}/3: продолжи с текущего состояния, предложи только оставшиеся цели и не повторяй провалившийся подход."
                     )
                     replacement = self.plan(repair_query)
                     if replacement and replacement != self._fallback_goals(repair_query):

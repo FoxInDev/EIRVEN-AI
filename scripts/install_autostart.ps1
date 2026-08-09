@@ -1,5 +1,6 @@
 $ErrorActionPreference = 'Stop'
 $Root = Split-Path -Parent $PSScriptRoot
+$VersionedExe = Join-Path $Root 'EIRVEN-AI-r26.exe'
 $PythonW = Join-Path $Root '.venv\Scripts\pythonw.exe'
 if (-not (Test-Path $PythonW)) { $PythonW = Join-Path $Root '.venv\Scripts\python.exe' }
 if (-not (Test-Path $PythonW)) { throw "EIRVEN Python environment not found" }
@@ -7,8 +8,13 @@ $Startup = [Environment]::GetFolderPath('Startup')
 $ShortcutPath = Join-Path $Startup 'EIRVEN AI.lnk'
 $Shell = New-Object -ComObject WScript.Shell
 $Shortcut = $Shell.CreateShortcut($ShortcutPath)
-$Shortcut.TargetPath = $PythonW
-$Shortcut.Arguments = '-m eirven_ai.supervisor'
+if (Test-Path $VersionedExe) {
+    $Shortcut.TargetPath = $VersionedExe
+    $Shortcut.Arguments = ''
+} else {
+    $Shortcut.TargetPath = $PythonW
+    $Shortcut.Arguments = '-m eirven_ai.supervisor'
+}
 $Shortcut.WorkingDirectory = $Root
 $Shortcut.WindowStyle = 7
 $Shortcut.Description = 'EIRVEN AI voice-first assistant'

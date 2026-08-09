@@ -145,6 +145,25 @@ class ApplicationService:
         ranked.sort(key=lambda pair: (-pair[0], pair[1].name.lower()))
         return ranked[0][1]
 
+    def strong_matches(self, query: str) -> list[dict[str, str]]:
+        """Return only unambiguous Start-menu name matches, without fuzzy launching.
+
+        This is deliberately stricter than :meth:`resolve`: it is used to decide what a
+        bare phrase such as ``открой Microsoft`` means.  A fuzzy best guess is suitable
+        only after the owner explicitly chose an application, never for arbitration.
+        """
+        clean = self._canonical_query(query)
+        key = re.sub(r"[^a-zа-я0-9]+", " ", clean.casefold().replace("ё", "е")).strip()
+        if not key:
+            return []
+        matches: list[dict[str, str]] = []
+        for row in self.list_installed():
+            name = str(row.get("name") or "").strip()
+            name_key = re.sub(r"[^a-zа-я0-9]+", " ", name.casefold().replace("ё", "е")).strip()
+            if name_key == key:
+                matches.append({"name": name, "app_id": str(row.get("app_id") or "")})
+        return matches
+
     def launch(self, query: str) -> dict[str, Any]:
         canonical = self._canonical_query(query)
         try:
@@ -196,6 +215,57 @@ class ApplicationService:
         }
         variants |= known.get(clean, set())
         return {v.casefold() for v in variants if v}
+
+    def reinstall(self, query: str) -> dict[str, Any]:
+        """Reinstall one unambiguously named Windows app through winget and verify it."""
+        if os.name != "nt":
+            raise ApplicationError("Переустановка приложений реализована для Windows")
+        winget = shutil.which("winget")
+        if not winget:
+            raise ApplicationError("winget не найден. Нужен App Installer из Microsoft Store")
+        try:
+            app = self.resolve(query)
+            name = app.name
+        except Exception:
+            name = str(query or "").strip()
+        if not name:
+            raise ApplicationError("Не указано приложение")
+
+        def run(args: list[str], timeout: int = 900) -> subprocess.CompletedProcess[str]:
+            return subprocess.run(
+                [winget, *args], capture_output=True, text=True, encoding="utf-8",
+                errors="replace", timeout=timeout, shell=False,
+            )
+
+        probe = run(["list", "--name", name, "--exact", "--accept-source-agreements", "--disable-interactivity"], 90)
+        probe_text = ((probe.stdout or "") + "\n" + (probe.stderr or "")).strip()
+        if probe.returncode != 0 or name.casefold() not in probe_text.casefold():
+            raise ApplicationError(
+                f"winget не нашёл однозначный установленный пакет «{name}». Ничего не удалено. {probe_text[-500:]}"
+            )
+        try:
+            self.close(name)
+        except Exception:
+            pass
+        uninstall = run(["uninstall", "--name", name, "--exact", "--silent", "--disable-interactivity"], 900)
+        uninstall_text = ((uninstall.stdout or "") + "\n" + (uninstall.stderr or "")).strip()
+        if uninstall.returncode != 0:
+            raise ApplicationError(f"Не удалось удалить «{name}» перед переустановкой: {uninstall_text[-700:]}")
+        install = run([
+            "install", "--name", name, "--exact", "--silent", "--accept-package-agreements",
+            "--accept-source-agreements", "--disable-interactivity",
+        ], 1200)
+        install_text = ((install.stdout or "") + "\n" + (install.stderr or "")).strip()
+        if install.returncode != 0:
+            raise ApplicationError(f"Удаление прошло, но повторная установка «{name}» не завершилась: {install_text[-900:]}")
+        verify = run(["list", "--name", name, "--exact", "--accept-source-agreements", "--disable-interactivity"], 90)
+        verify_text = ((verify.stdout or "") + "\n" + (verify.stderr or "")).strip()
+        verified = verify.returncode == 0 and name.casefold() in verify_text.casefold()
+        self.list_installed(refresh=True)
+        return {
+            "name": name, "reinstalled": True, "verified": verified,
+            "uninstall_output": uninstall_text[-1200:], "install_output": install_text[-1200:],
+        }
 
     def close(self, query: str) -> dict[str, Any]:
         """Close a named user application by process metadata, without an LLM."""

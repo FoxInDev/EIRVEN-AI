@@ -122,7 +122,7 @@ class Bootstrap:
             request = urllib.request.Request(
                 "http://127.0.0.1:11434/api/pull",
                 data=payload,
-                headers={"Content-Type": "application/json", "User-Agent": "EIRVEN-AI/1.2.2"},
+                headers={"Content-Type": "application/json", "User-Agent": "EIRVEN-AI/1.4.0"},
                 method="POST",
             )
             last_status = ""
@@ -162,7 +162,7 @@ class Bootstrap:
             temp.unlink(missing_ok=True)
             request = urllib.request.Request(
                 url,
-                headers={"User-Agent": "EIRVEN-AI/1.2.2", "Accept": "application/octet-stream"},
+                headers={"User-Agent": "EIRVEN-AI/1.4.0", "Accept": "application/octet-stream"},
             )
             try:
                 with urllib.request.urlopen(request, timeout=180) as response, temp.open("wb") as target:
@@ -698,14 +698,21 @@ class Bootstrap:
             self.gui.post("log", "Ядро EIRVEN готово к запуску")
             self.complete_step(6, "Основные компоненты готовы")
 
-            marker = ROOT / ".installed-v1.2.2-public"
-            marker.write_text(time.strftime("%Y-%m-%d %H:%M:%S"), encoding="utf-8")
+            # Packaging the convenience one-file EXE is best-effort. The real installed
+            # runtime is the verified .venv + launcher.py, and start_windows.bat/shortcuts
+            # already have a Python fallback. A PyInstaller/AV/resource quirk must never
+            # turn a healthy 98%-complete install into an endless reinstall loop.
+            self.update("Собираю приложение Windows", units=2, local_fraction=0.1)
+            exe_ready = False
             try:
-                self.update("Собираю приложение Windows", units=2, local_fraction=0.1)
-                self.run(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(ROOT / "scripts" / "build_windows.ps1")], "Сборка EIRVEN-AI.exe", timeout=1800)
-                self.complete_step(2, "Приложение собрано")
+                self.run(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(ROOT / "scripts" / "build_windows.ps1")], "Сборка EIRVEN-AI-r26.exe", timeout=1800)
+                exe_ready = (ROOT / "EIRVEN-AI-r26.exe").is_file()
+                self.gui.post("log", "Однофайловый EXE успешно собран")
             except Exception as exc:
-                self.gui.post("log", f"EXE не собран, будет использован надёжный ярлык CMD: {exc}")
+                self.gui.post("log", f"EXE-сборка пропущена, включаю надёжный Python-launcher: {exc}")
+            self.complete_step(2, "Приложение готово" if exe_ready else "Приложение готово через резервный launcher")
+            marker = ROOT / ".installed-v1.4.0-r26"
+            marker.write_text(time.strftime("%Y-%m-%d %H:%M:%S"), encoding="utf-8")
             try:
                 self.run(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(ROOT / "scripts" / "create_shortcut.ps1")], "Создание ярлыка", timeout=60)
             except Exception as exc:
@@ -728,7 +735,7 @@ class Bootstrap:
         for attempt in range(1, 4):
             self.done_units = 0.0
             try:
-                state_file.write_text(json.dumps({"version": "1.2.2", "attempt": attempt, "status": "running", "updated": time.time()}), encoding="utf-8")
+                state_file.write_text(json.dumps({"version": "1.4.0", "attempt": attempt, "status": "running", "updated": time.time()}), encoding="utf-8")
                 if attempt > 1:
                     self.gui.post("retry", f"Перезапускаю установку автоматически — попытка {attempt}/3. Уже скачанное сохранено.", 0)
                 self.install_once()
@@ -736,7 +743,7 @@ class Bootstrap:
                 return
             except Exception as exc:
                 last_error = exc
-                state_file.write_text(json.dumps({"version": "1.2.2", "attempt": attempt, "status": "retry", "error": str(exc)[-1200:], "updated": time.time()}, ensure_ascii=False), encoding="utf-8")
+                state_file.write_text(json.dumps({"version": "1.4.0", "attempt": attempt, "status": "retry", "error": str(exc)[-1200:], "updated": time.time()}, ensure_ascii=False), encoding="utf-8")
                 if attempt < 3:
                     delay = 3 if attempt == 1 else 8
                     self.gui.post("retry", f"Установка встретила ошибку. Через {delay} сек. попробую ещё раз автоматически ({attempt + 1}/3).", delay)
@@ -761,6 +768,19 @@ class InstallerGUI:
 
         self.tk = tk
         self.exit_code = 0
+        self._log_lock = threading.RLock()
+        self.log_path = ROOT / "logs" / "install.log"
+        self.log_path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            previous = self.log_path.read_text(encoding="utf-8", errors="replace") if self.log_path.exists() else ""
+            if previous:
+                self.log_path.with_name("install.previous.log").write_text(previous[-250000:], encoding="utf-8")
+            self.log_path.write_text(
+                f"=== EIRVEN installer started {time.strftime('%Y-%m-%d %H:%M:%S')} ===\n",
+                encoding="utf-8",
+            )
+        except Exception:
+            pass
         self.root = tk.Tk()
         self.root.title("Установка EIRVEN")
         self.root.geometry("600x445")
@@ -834,7 +854,33 @@ class InstallerGUI:
             self.orb.create_oval(x-dot, y-dot, x+dot, y+dot, fill=color, outline="")
         self.root.after(32, self.animate_orb)
 
+    def _append_log(self, text: str) -> None:
+        try:
+            clean = str(text or "").replace("\r", "").rstrip()
+            if not clean:
+                return
+            with self._log_lock:
+                with self.log_path.open("a", encoding="utf-8") as handle:
+                    handle.write(clean + "\n")
+        except Exception:
+            pass
+
+    @staticmethod
+    def _error_tail(value: object, limit: int = 460) -> str:
+        text = str(value or "").replace("\r", "").strip()
+        if not text:
+            return "Неизвестная ошибка"
+        lines = [line.strip() for line in text.splitlines() if line.strip()]
+        tail = "\n".join(lines[-7:]) if lines else text
+        return tail[-limit:]
+
     def post(self, kind, *args):
+        if kind == "log" and args:
+            self._append_log(str(args[0]))
+        elif kind in {"retry", "error"} and args:
+            self._append_log(f"[{kind.upper()}] {args[0]}")
+        elif kind == "done":
+            self._append_log("[DONE] installation completed")
         self.q.put((kind, args))
 
     def poll(self):
@@ -856,7 +902,11 @@ class InstallerGUI:
                 elif kind == "error":
                     self.exit_code = 1
                     self.status.config(text="Не удалось завершить установку", fg="#ff86a0")
-                    self.note.config(text=(str(args[0])[:180] + "\nМожно запустить установщик ещё раз — скачанное сохранено."), fg="#ff9aaf")
+                    tail = self._error_tail(args[0] if args else "")
+                    self.note.config(
+                        text=(tail + "\nПодробности: logs\\install.log. Уже скачанное сохранено."),
+                        fg="#ff9aaf",
+                    )
                 elif kind == "done":
                     self.exit_code = 0
                     self.bar["value"] = 100

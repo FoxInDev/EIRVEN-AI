@@ -78,9 +78,22 @@ class ToolExecutor:
         # next unrelated command.
         self.stop_event = threading.Event()
         self._scope = threading.local()
+        self._stop_lock = threading.RLock()
+        self._stop_generation = 0
         self._process_lock = threading.RLock()
         self._active_processes: dict[int, subprocess.Popen[str]] = {}
         self.runtime_control = None
+        self.desktop_lock = None
+        self.cognition = None
+
+    _DESKTOP_SERIALIZED = {
+        "screenshot", "desktop_state", "foreground_window", "window_list", "window_elements",
+        "window_focus", "window_click", "window_type", "window_wait", "click", "type_text",
+        "mouse_move", "mouse_drag", "scroll", "press_key", "hotkey", "launch_application",
+        "close_application", "close_browsers", "close_user_apps", "open_default_url",
+        "default_search", "media_control", "system_volume", "set_dark_theme",
+        "toggle_quick_setting", "explorer_current_folder", "explorer_selected_files",
+    }
 
     _VOICE_GUARDED_SIDE_EFFECTS = {
         "click", "window_click", "window_type", "type_text", "press_key", "hotkey",
@@ -118,14 +131,22 @@ class ToolExecutor:
 
     def _stop_requested(self) -> bool:
         scoped = self._scoped_stop_event()
-        return self.stop_event.is_set() or bool(scoped and scoped.is_set())
+        expected = getattr(self._scope, "stop_generation", None)
+        with self._stop_lock:
+            invalidated = expected is not None and int(expected) != self._stop_generation
+        return self.stop_event.is_set() or invalidated or bool(scoped and scoped.is_set())
 
     def task_scope(self, stop_event: threading.Event | None = None):
         executor = self
         class _Scope:
             def __enter__(self_inner):
                 self_inner.previous = getattr(executor._scope, "stop_event", None)
+                self_inner.previous_generation = getattr(executor._scope, "stop_generation", None)
+                self_inner.previous_task_scoped = getattr(executor._scope, "task_scoped", False)
                 executor._scope.stop_event = stop_event
+                with executor._stop_lock:
+                    executor._scope.stop_generation = executor._stop_generation
+                executor._scope.task_scoped = True
                 return executor
             def __exit__(self_inner, *_args):
                 if self_inner.previous is None:
@@ -135,6 +156,12 @@ class ToolExecutor:
                         pass
                 else:
                     executor._scope.stop_event = self_inner.previous
+                if self_inner.previous_generation is None:
+                    try: del executor._scope.stop_generation
+                    except AttributeError: pass
+                else:
+                    executor._scope.stop_generation = self_inner.previous_generation
+                executor._scope.task_scoped = self_inner.previous_task_scoped
         return _Scope()
 
     def reset_stop(self) -> None:
@@ -143,6 +170,10 @@ class ToolExecutor:
         self.stop_event.clear()
 
     def stop(self) -> None:
+        with self._stop_lock:
+            # The monotonic generation permanently invalidates already-running tool loops,
+            # even after reset_stop reopens the lane for the owner's next command.
+            self._stop_generation += 1
         self.stop_event.set()
         with self._process_lock:
             processes = list(self._active_processes.values())
@@ -177,6 +208,9 @@ class ToolExecutor:
         )
 
     def execute(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+        if not bool(getattr(self._scope, "task_scoped", False)):
+            with self._stop_lock:
+                self._scope.stop_generation = self._stop_generation
         if self._stop_requested():
             return {"ok": False, "error": "Остановлено пользователем"}
         method = getattr(self, f"tool_{name}", None)
@@ -209,12 +243,15 @@ class ToolExecutor:
             "window_click": "high",
             "window_type": "high",
             "launch_application": "medium",
+            "reinstall_application": "high",
             "close_application": "medium",
             "close_browsers": "medium",
             "close_user_apps": "high",
             "set_dark_theme": "medium",
             "toggle_quick_setting": "high",
             "process_list": "low",
+            "explorer_current_folder": "low",
+            "explorer_selected_files": "low",
             "process_terminate": "high",
             "system_find": "low",
             "system_open_named": "medium",
@@ -237,7 +274,14 @@ class ToolExecutor:
         started = time.monotonic()
         try:
             self._wait_voice_precommit(name)
-            result = method(**arguments)
+            desktop_lock = getattr(self, "desktop_lock", None)
+            if desktop_lock is not None and name in self._DESKTOP_SERIALIZED:
+                with desktop_lock:
+                    if self._stop_requested():
+                        raise ToolError("Остановлено пользователем до действия на рабочем столе")
+                    result = method(**arguments)
+            else:
+                result = method(**arguments)
             payload = {"ok": True, "result": result}
             self._log(name, arguments, payload, risk, True, elapsed_ms=round((time.monotonic() - started) * 1000))
             return payload
@@ -281,6 +325,11 @@ class ToolExecutor:
             raise ToolError("Не указана команда")
         found = shutil.which(name)
         return {"command": name, "available": bool(found), "path": found or ""}
+
+    def tool_reinstall_application(self, application: str) -> dict[str, Any]:
+        if not self.applications:
+            raise ToolError("Сервис приложений недоступен")
+        return dict(self.applications.reinstall(application) or {})
 
     def tool_foreground_window(self) -> dict[str, Any]:
         """Return the actual foreground Windows window without enumerating processes."""
@@ -442,6 +491,100 @@ if ($pick) { $pick | ConvertTo-Json -Compress }
             raise
         except Exception as exc:
             raise ToolError(f"Не удалось определить открытую папку Проводника: {exc}") from exc
+
+    def tool_explorer_selected_files(self) -> dict[str, Any]:
+        """Return an unambiguous File Explorer selection.
+
+        A typed/voice command often moves focus away from Explorer before this tool is
+        called.  Prefer the foreground Explorer when there is one; otherwise return the
+        selections from every Explorer window instead of silently taking the first stale
+        window.  MissionEngine will ask the owner when that produces more than one file.
+        """
+        if os.name != "nt":
+            raise ToolError("Выделение Проводника доступно только в Windows")
+        script = r"""
+$ErrorActionPreference = 'Stop'
+Add-Type @"
+using System;
+using System.Runtime.InteropServices;
+public static class EirvenSelectionWin32 { [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow(); }
+"@ -ErrorAction SilentlyContinue
+$fg = 0
+try { $fg = [int64][EirvenSelectionWin32]::GetForegroundWindow() } catch {}
+$shell = New-Object -ComObject Shell.Application
+$windows = @($shell.Windows())
+$picks = @()
+foreach ($w in $windows) {
+  try {
+    if ([int64]$w.HWND -eq $fg -and $w.Document.Folder) { $picks = @($w); break }
+  } catch {}
+}
+if ($picks.Count -eq 0) {
+  foreach ($w in $windows) {
+    try { if ($w.Document.SelectedItems().Count -gt 0) { $picks += $w } } catch {}
+  }
+}
+$items = @()
+$sourceHwnds = @()
+foreach ($pick in $picks) {
+  try {
+    $pickHwnd = [int64]$pick.HWND
+    $sourceHwnds += $pickHwnd
+    $selected = $pick.Document.SelectedItems()
+    for ($i = 0; $i -lt $selected.Count; $i++) {
+      try {
+        $item = $selected.Item($i)
+        $path = [string]$item.Path
+        if ([string]::IsNullOrWhiteSpace($path)) { continue }
+        $isFolder = [bool]$item.IsFolder
+        $size = 0
+        if (-not $isFolder -and [System.IO.File]::Exists($path)) { $size = [int64](Get-Item -LiteralPath $path).Length }
+        $items += [pscustomobject]@{ path=$path; name=[string]$item.Name; is_folder=$isFolder; size=$size; source_hwnd=$pickHwnd }
+      } catch {}
+    }
+  } catch {}
+}
+$hwnd = 0
+if ($sourceHwnds.Count -eq 1) {
+  $hwnd = [int64]$sourceHwnds[0]
+}
+[pscustomobject]@{ hwnd=$hwnd; source_hwnds=@($sourceHwnds); files=@($items); verified=$true } | ConvertTo-Json -Depth 4 -Compress
+"""
+        try:
+            completed = subprocess.run(
+                ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script],
+                capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=5,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+            if completed.returncode != 0:
+                raise ToolError((completed.stderr or completed.stdout or "Explorer selection COM failed").strip())
+            lines = (completed.stdout or "").strip().splitlines()
+            data = json.loads(lines[-1]) if lines else {"files": [], "hwnd": 0, "verified": True}
+            rows = data.get("files") or []
+            if isinstance(rows, dict):
+                rows = [rows]
+            files = []
+            for row in rows if isinstance(rows, list) else []:
+                path = str((row or {}).get("path") or "").strip()
+                if not path:
+                    continue
+                files.append({
+                    "path": path, "name": str((row or {}).get("name") or Path(path).name),
+                    "is_folder": bool((row or {}).get("is_folder")),
+                    "size": int((row or {}).get("size") or 0),
+                    "source_hwnd": int((row or {}).get("source_hwnd") or 0),
+                })
+            source_hwnds = data.get("source_hwnds") or []
+            if isinstance(source_hwnds, (int, str)):
+                source_hwnds = [source_hwnds]
+            return {
+                "hwnd": int(data.get("hwnd") or 0), "files": files, "verified": True,
+                "source_hwnds": [int(value) for value in source_hwnds if str(value).strip()],
+            }
+        except ToolError:
+            raise
+        except Exception as exc:
+            raise ToolError(f"Не удалось прочитать выделенные файлы Проводника: {exc}") from exc
 
     def tool_process_list(self, name_contains: str = "", limit: int = 200) -> list[dict[str, Any]]:
         try:
@@ -636,6 +779,14 @@ if ($pick) { $pick | ConvertTo-Json -Compress }
             raise ToolError("Файл уже существует")
         if len(content.encode("utf-8")) > 4_000_000:
             raise ToolError("Слишком большой файл для одного шага")
+        cognition = getattr(self, "cognition", None)
+        if cognition is not None:
+            try:
+                cognition.capture_file(target, label=f"Изменение {target.name}")
+            except Exception:
+                # An unavailable checkpoint must not corrupt the requested write. The
+                # write itself remains guarded and its action log is still preserved.
+                pass
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(content, encoding="utf-8", newline="\n")
         return {"path": str(target), "bytes": len(content.encode("utf-8"))}
@@ -811,6 +962,12 @@ $result | ConvertTo-Json -Depth 7 -Compress
         encoded = content.encode("utf-8")
         if len(encoded) > 2_000_000:
             raise ToolError("Лимит одного файла — 2 МБ")
+        cognition = getattr(self, "cognition", None)
+        if cognition is not None:
+            try:
+                cognition.capture_file(target, label=f"Изменение {target.name}")
+            except Exception:
+                pass
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(content, encoding="utf-8", newline="\n")
         return {"path": str(target.relative_to(self.guard.root)), "bytes": len(encoded)}
@@ -1354,12 +1511,14 @@ $result | ConvertTo-Json -Depth 7 -Compress
             {"name": "desktop_state", "description": "Получить состояние реального рабочего стола: полный скриншот, активное окно, курсор и уровень доступа", "arguments": {}},
             {"name": "access_status", "description": "Проверить, запущен ли EIRVEN с полным административным доступом к компьютеру", "arguments": {}},
             {"name": "launch_application", "description": "Запустить установленное приложение по названию после явной просьбы владельца", "arguments": {"application": "название приложения"}},
+            {"name": "reinstall_application", "description": "Переустановить ОДНО однозначно найденное Windows-приложение через winget после явной просьбы владельца и проверить, что пакет снова установлен. Не удаляет пользовательские файлы вручную.", "arguments": {"application": "точное название приложения"}},
             {"name": "close_application", "description": "Закрыть запущенное пользовательское приложение по названию", "arguments": {"application": "название приложения"}},
             {"name": "close_user_apps", "description": "Закрыть видимые пользовательские приложения, сохранив Windows и EIRVEN", "arguments": {}},
             {"name": "set_dark_theme", "description": "Включить или выключить темную системную тему Windows", "arguments": {"enabled": "true/false"}},
             {"name": "toggle_quick_setting", "description": "Переключить видимую быструю настройку Windows, например airplane/wifi/bluetooth", "arguments": {"name": "airplane|wifi|bluetooth", "enabled": "true/false"}},
             {"name": "process_list", "description": "Посмотреть реальные процессы Windows; можно фильтровать по названию", "arguments": {"name_contains": "необязательно"}},
             {"name": "explorer_current_folder", "description": "Получить подтверждённый путь папки, которая сейчас открыта в Проводнике Windows", "arguments": {}},
+            {"name": "explorer_selected_files", "description": "Получить точные пути файлов, которые владелец сейчас выделил в Проводнике Windows", "arguments": {}},
             {"name": "process_terminate", "description": "Завершить совпадающие внешние процессы и затем проверить, что они действительно закрыты; процессы EIRVEN по умолчанию защищены", "arguments": {"name_contains": "имя процесса", "all_matches": "true/false", "protect_eirven": "true/false"}},
             {"name": "system_find", "description": "Найти файл или папку на компьютере владельца по имени; по умолчанию ищет в профиле пользователя", "arguments": {"name": "часть имени", "root": "необязательный путь"}},
             {"name": "system_open_named", "description": "Найти и сразу открыть любой пользовательский файл или папку по имени за один шаг; location можно указать как desktop/рабочий стол/documents/downloads", "arguments": {"name": "имя файла или папки", "location": "необязательная подсказка места"}},
@@ -1417,7 +1576,7 @@ def _native_tool_schema(executor: ToolExecutor) -> list[dict[str, Any]]:
     required_by_tool = {
         "read_file": {"path"}, "write_file": {"path", "content"},
         "make_directory": {"path"}, "run_command": {"command"},
-        "launch_application": {"application"}, "close_application": {"application"}, "close_user_apps": set(), "set_dark_theme": set(), "toggle_quick_setting": {"name", "enabled"}, "system_find": {"name"},
+        "launch_application": {"application"}, "reinstall_application": {"application"}, "close_application": {"application"}, "close_user_apps": set(), "set_dark_theme": set(), "toggle_quick_setting": {"name", "enabled"}, "system_find": {"name"},
         "system_open_named": {"name"}, "system_open_path": {"path"}, "system_list_files": {"path"},
         "system_read_file": {"path"}, "system_write_file": {"path", "content"},
         "powershell": {"command"}, "git_publish": {"path", "remote"},

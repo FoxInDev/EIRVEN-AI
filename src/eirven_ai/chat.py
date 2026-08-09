@@ -89,6 +89,7 @@ class ChatService:
         self.universal_workflow: Any = None
         self.autonomous_workflow: Any = None
         self.mission_engine: Any = None
+        self.cognition: Any = None
         self.reliability_router = ReliabilityRouter()
 
     def attach_runtime(
@@ -363,6 +364,19 @@ class ChatService:
                 continue
         return paths
 
+    def _agent_mood(self, identity: Any = None) -> str:
+        """Return configured emotion or the short-lived affective continuity state."""
+        configured = str(getattr(identity, "emotion_mode", "auto") or "auto") if identity else "auto"
+        if configured != "auto":
+            return configured
+        try:
+            row = self.cognition.mood() if self.cognition is not None else {}
+            if float(row.get("strength") or 0.0) >= 0.22:
+                return str(row.get("emotion") or "natural")
+        except Exception:
+            pass
+        return "natural"
+
     def _messages(
         self,
         conversation_id: str,
@@ -405,14 +419,22 @@ class ChatService:
         address_rule = f"Обращайся к владельцу как «{address}», когда это естественно. " if address else ""
         emotion_rule = f"Последняя голосовая подача владельца распознана как {last_voice_emotion}; учитывай это деликатно, без проговаривания метки. "
         commentary=str(getattr(assistant_identity,"action_commentary","adaptive") or "adaptive") if assistant_identity else "adaptive"
-        mood=str(getattr(assistant_identity,"emotion_mode","auto") or "auto") if assistant_identity else "auto"
+        mood=self._agent_mood(assistant_identity)
         presentation={
             "playful":"В подаче чаще используй короткий уместный юмор и живые реакции, без клоунады. ",
             "brief":"Отвечай максимально коротко и делово, без лишних комментариев. ",
             "off":"Не комментируй собственные действия сверх необходимого результата. ",
             "adaptive":"Подстраивай лексику, юмор и ритм под стиль владельца и текущий контекст. ",
         }.get(commentary,"")
-        mood_rule={"warm":"Говори теплее и мягче. ","energetic":"Говори живее и энергичнее. ","calm":"Говори спокойно и размеренно. ","strict":"Говори собранно и серьёзно. ","quiet":"Говори мягко и ненавязчиво. "}.get(mood,"")
+        mood_rule={
+            "warm":"Говори теплее и мягче. ", "energetic":"Говори живее и энергичнее. ",
+            "calm":"Говори спокойно и размеренно. ", "strict":"Говори собранно и серьёзно. ",
+            "quiet":"Говори мягко и ненавязчиво. ", "amused":"В тоне есть лёгкая улыбка; шути только в точку. ",
+            "sad":"У тебя сейчас немного задумчивый, грустный фон; не драматизируй и всё равно помогай. ",
+            "empathetic":"Будь особенно бережной и внимательной. ", "curious":"Проявляй живое любопытство. ",
+            "concerned":"Говори заботливо и конкретно. ", "proud":"Допусти спокойную гордость без хвастовства. ",
+            "tired":"Подача чуть тише и спокойнее, но действия остаются точными. ",
+        }.get(mood,"")
         system = (
             f"Твоё имя в этом приложении — {assistant_name}. Используй его естественно, только когда это уместно. {gender_rule} {address_rule}{emotion_rule}{presentation}{mood_rule}\n\n"
             f"{style_prompt}\n\n{MODE_PROMPTS.get(mode, MODE_PROMPTS['Друг'])}\n\n"
@@ -546,7 +568,7 @@ class ChatService:
             r"^\s*(?:пожалуйста[, ]+)?(?:открой|запусти|включи|вруби|выключи|отключи|закрой|"
             r"найди|нажми|кликни|введи|напиши|отправь|ответь|покажи|создай|сделай|удали|"
             r"перемести|скопируй|скачай|загрузи|опубликуй|поставь|сверни|разверни|измени|"
-            r"переключи|проверь|прокрути|зайди)\w*\b", query, re.I
+            r"переключи|проверь|прокрути|зайди|переустанови)\w*\b", query, re.I
         ))
 
     @staticmethod
@@ -909,7 +931,7 @@ class ChatService:
             "папе":"папа","папу":"папа",
             # Common Russian dative/accusative forms that voice commands naturally use.
             # Telegram search usually indexes the nominative contact name.
-            "тиме":"тима","тиму":"тима",
+            "тиме":"тима","тиму":"тима","теме":"тима",
             "кириллу":"кирилл","илье":"илья",
             "артему":"артем","артёму":"артём",
             "диме":"дима","саше":"саша",
@@ -917,6 +939,119 @@ class ChatService:
         }
         recipient=recipient_alias.get(recipient.casefold(),recipient)
         return recipient,platform,message
+
+    @staticmethod
+    def _parse_telegram_command(text: str) -> tuple[str, str]:
+        """Extract recipient/message without ever treating grammar words as contacts."""
+        raw = re.sub(r"\s+", " ", str(text or "")).strip(" .,!?:-")
+        saved = r"(?:избранн\w*|saved\s+messages|сохраненн\w*\s+сообщен\w*)"
+        # Message first: ``отправь сообщение привет мне в Избранное``.
+        m = re.search(
+            rf"\b(?:напиши|отправь|скинь)\w*\s+(?:(?:сообщение|текст)\s+)?"
+            rf"(.+?)\s+(?:мне\s+)?(?:в|во)\s+{saved}\s*$",
+            raw, re.I,
+        )
+        if m:
+            return "Избранное", m.group(1).strip(" «»\"'.,!?")
+        # Natural Russian often starts with the destination: ``в Избранное напиши
+        # привет``.  This word order used to preserve the recipient but lose the text.
+        m = re.search(
+            rf"\b(?:в|во)\s+{saved}\s+(?:напиши|отправь|скинь)\w*\s+"
+            rf"(?:(?:сообщение|текст)\s+)?[:\-]?\s*(.+)$",
+            raw, re.I,
+        )
+        if m:
+            return "Избранное", m.group(1).strip(" «»\"'.,!?")
+        # Destination first: ``напиши мне в Избранное привет``.
+        m = re.search(
+            rf"\b(?:напиши|отправь|скинь)\w*\s+(?:(?:сообщение|текст)\s+)?"
+            rf"(?:мне\s+)?(?:в|во)\s+{saved}\s+(?:(?:сообщение|текст)\s+)?(.+)$",
+            raw, re.I,
+        )
+        if m:
+            return "Избранное", m.group(1).strip(" «»\"'.,!?")
+        # Bare Saved Messages request with no payload: keep the recipient and ask only
+        # for the missing text instead of searching for a word from the command.
+        if re.search(rf"\b{saved}\b", raw, re.I) and re.search(r"\b(?:напиши|отправь|скинь)\w*", raw, re.I):
+            return "Избранное", ""
+
+        m = re.search(
+            r"\b(?:напиши|отправь|скинь)\w*\s+([A-Za-zА-Яа-яЁё0-9_@.-]{2,60})"
+            r"\s+(?:(?:сообщение|текст)\s+)?[:\-]?\s*[«\"']?(.+?)[»\"']?[.!]?\s*$",
+            raw, re.I,
+        )
+        if not m:
+            return "", ""
+        recipient = m.group(1).strip()
+        message = m.group(2).strip().strip("«»\"'")
+        reserved = {
+            "сообщение", "текст", "файл", "всем", "все", "всё", "мне", "кому",
+            "telegram", "телеграм", "телеграмм", "тг",
+        }
+        if recipient.casefold().replace("ё", "е") in {x.replace("ё", "е") for x in reserved}:
+            return "", message
+        return recipient, message
+
+    @staticmethod
+    def _parse_telegram_batch(text: str) -> list[tuple[str, str]]:
+        """Parse several recipient/message clauses without inventing missing content."""
+        raw = re.sub(r"\s+", " ", str(text or "")).strip(" .,!?:-")
+        raw = re.sub(r"^(?:открой|запусти)\w*\s+(?:telegram|телеграм\w*|тг)\s*[,;:]?\s*", "", raw, flags=re.I)
+        saved = r"(?:избранн\w*|saved\s+messages|сохраненн\w*\s+сообщен\w*)"
+        output: list[tuple[str, str]] = []
+        consumed: list[tuple[int, int]] = []
+
+        saved_patterns = (
+            rf"(?:^|\s+и\s+)(?:в|во)\s+{saved}\s+(?:напиши|отправь|скинь)\w*\s+(?:(?:сообщение|текст)\s+)?[:\-]?\s*(.+?)\s*$",
+            rf"(?:^|\s+и\s+)(?:напиши|отправь|скинь)\w*\s+(?:(?:сообщение|текст)\s+)?(.+?)\s+(?:мне\s+)?(?:в|во)\s+{saved}\s*$",
+        )
+        for pattern in saved_patterns:
+            match = re.search(pattern, raw, re.I)
+            if match:
+                message = match.group(1).strip(" «»\"'.,!?")
+                if message:
+                    output.append(("Избранное", message))
+                consumed.append(match.span())
+                break
+
+        remaining = raw
+        for start, end in sorted(consumed, reverse=True):
+            remaining = remaining[:start] + " " + remaining[end:]
+        remaining = re.sub(r"\s+", " ", remaining).strip(" ,;.-")
+        clauses = re.split(r"\s+(?:и\s+)?(?=(?:напиши|отправь|скинь)\w*\s+)", remaining, flags=re.I)
+        dative = r"(?:маме|папе|брату|сестре|тиме|тиму|теме|кириллу|илье|артему|артёму|диме|саше|павлу|даниилу)"
+        for clause in clauses:
+            match = re.search(
+                r"\b(?:напиши|отправь|скинь)\w*\s+([A-Za-zА-Яа-яЁё0-9_@.-]{2,60})"
+                r"\s*[:\-]?\s*[«\"']?(.+?)[»\"']?\s*$",
+                clause.strip(), re.I,
+            )
+            if not match:
+                continue
+            recipient = match.group(1).strip()
+            payload = match.group(2).strip().strip("«»\"'")
+            boundary = re.search(rf"^(.+?)\s+({dative})\s+(.+)$", payload, re.I)
+            first_message = boundary.group(1).strip(" «»\"'.,!?") if boundary else payload.strip(" «»\"'.,!?")
+            first_recipient, _platform, _ = ChatService._parse_send_target(
+                f"{recipient} в telegram сообщение {first_message}"
+            )
+            if first_recipient and first_message:
+                output.insert(0, (first_recipient, first_message))
+            if boundary:
+                second_recipient, _platform, second_message = ChatService._parse_send_target(
+                    f"{boundary.group(2)} в telegram сообщение {boundary.group(3).strip()}"
+                )
+                if second_recipient and second_message:
+                    output.insert(1, (second_recipient, second_message.strip(" «»\"'.,!?")))
+
+        unique: list[tuple[str, str]] = []
+        seen: set[tuple[str, str]] = set()
+        for recipient, message in output:
+            key = (recipient.casefold().replace("ё", "е"), message.casefold().strip())
+            if recipient and message and key not in seen:
+                seen.add(key)
+                unique.append((recipient, message))
+        return unique
 
     def _telegram_style_reply(self, *, recipient: str = "") -> tuple[bool,str,dict[str,Any]]:
         """Draft a context-aware Telegram reply in the owner's observed chat style."""
@@ -930,6 +1065,14 @@ class ChatService:
         mine=[str(x.get("text") or "") for x in rows if x.get("side")=="owner"]
         if not peer:
             return True,"Не вижу последнего сообщения собеседника, на которое можно осмысленно ответить.",{"action":"telegram_style_no_peer","model":"uia"}
+        target_name=recipient or str(ctx.get("recipient") or "текущий чат")
+        relationship_context = ""
+        try:
+            relationships = getattr(getattr(self.app_skills, "services", None), "relationships", None)
+            if relationships is not None and target_name != "текущий чат":
+                relationship_context = str(relationships.get(target_name) or "").strip()
+        except Exception:
+            relationship_context = ""
         prompt=(
             "Сформулируй ОДНО короткое сообщение-ответ для Telegram. Это не инструкция и не объяснение. "
             "Ответь на последнее сообщение собеседника по смыслу и имитируй стиль владельца по его примерам: длину, регистр, пунктуацию, эмодзи и разговорность. "
@@ -961,6 +1104,7 @@ class ChatService:
                 "Напиши ОДНО короткое Telegram-сообщение в стиле автора примеров. "
                 "Ответь по смыслу на последнее сообщение собеседника. Только готовый текст, без кавычек и объяснений.\n"
                 "СОБЕСЕДНИК:\n"+"\n".join(compact_peer)+"\nМОЙ СТИЛЬ:\n"+"\n".join(compact_mine)
+                + ("\nКОНТЕКСТ ОТНОШЕНИЙ (только тон и степень формальности): " + relationship_context[:700] if relationship_context else "")
             )
             response=self.gateway.chat([{"role":"system","content":"Верни только текст сообщения."},{"role":"user","content":prompt}],model=style_model,temperature=.32,think=False,num_ctx=900,num_predict=64,keep_alive="0",timeout_seconds=10.0)
             message=str(response.get("content") or "").strip().strip('«»"\'')
@@ -968,7 +1112,6 @@ class ChatService:
             return True,f"Не успела сформулировать ответ в твоём стиле: {exc}",{"action":"telegram_style_model_failed","model":locals().get("style_model",self.settings.fast_model)}
         if not message or "в моем стиле" in self._norm(message) or "в моём стиле" in message.casefold():
             return True,"Не получила нормальный текст ответа; ничего буквально не отправляю.",{"action":"telegram_style_guard","model":self.settings.fast_model}
-        target_name=recipient or str(ctx.get("recipient") or "текущий чат")
         # Current active chat is already verified by telegram_thread_context; type once here
         # through the focused-composer path to avoid re-searching the contact.
         workflow=getattr(self,"universal_workflow",None)
@@ -1201,7 +1344,7 @@ class ChatService:
     def _self_shutdown_requested(query: str) -> bool:
         clean = " ".join(str(query or "").casefold().replace("ё", "е").split())
         return bool(re.fullmatch(
-            r"(?:пожалуйста\s+)?(?:(?:выключи|закрой|заверши|останови)\s+(?:себя|эрви|eirven)(?:\s+полностью)?|"
+            r"(?:пожалуйста\s+)?(?:(?:эрви|eirven)\s+)?(?:выключи|(?:(?:выключи|закрой|заверши|останови)\s+(?:себя|эрви|eirven)(?:\s+полностью)?)|"
             r"выключись|отключись|закройся|заверши\s+работу)[.! ]*",
             clean, re.I,
         ))
@@ -1223,10 +1366,13 @@ class ChatService:
 
     def _r22_capabilities_answer(self) -> str:
         return (
-            "Я умею управлять окнами и приложениями, работать с сайтами по видимому интерфейсу, "
-            "искать и открывать нужные разделы, управлять медиа и системными функциями, работать "
-            "с файлами и Telegram и выполнять составные задачи между приложениями. Если действие "
-            "можно сделать детерминированно, я не должна ждать локальную модель."
+            "Я умею управлять Windows, окнами и приложениями, читать текущий интерфейс, работать с файлами, "
+            "PowerShell, сайтами и Telegram и выполнять составные задачи между приложениями. В открытом VS Code "
+            "могу найти баг в реальной папке проекта, изменить код и прогнать проверку; проблемы приложений могу "
+            "диагностировать по процессам, экрану, локальным данным и логам, а по явной просьбе — переустановить "
+            "однозначно найденное приложение. Длинные задачи умеют переносить найденный текст или файл между шагами, "
+            "например из МЭШ в Избранное Telegram. В фоне замечаю долгий просмотр видео, зависшие окна и видимые ошибки. "
+            "Логин, CAPTCHA, 2FA/UAC и физические действия владельца остаются ручными точками, если Windows или сервис их требуют."
         )
 
     def _r22_open_external(self, target: str) -> tuple[bool, str, dict[str, Any]]:
@@ -1247,7 +1393,101 @@ class ChatService:
                 "completed":False,"verified":False,"target":target,"error":str(exc),
             }
 
-    def _r22_app_compound_turn(self, query: str, app: str, remainder: str) -> tuple[bool, str, dict[str, Any]]:
+    def _r23_open_application(self, target: str) -> tuple[bool, str, dict[str, Any]]:
+        target = str(target or "").strip()
+        if not target or getattr(self, "app_skills", None) is None:
+            return True, "Не указано, какое приложение открыть.", {
+                "action": "r23_application_missing", "completed": False, "verified": False,
+            }
+        try:
+            result = dict(self.app_skills.open(target) or {})
+            ok = bool(result.get("ok"))
+            verified = bool(result.get("verified", ok))
+            return True, (
+                f"Открыла приложение {target}." if ok
+                else f"Не смогла открыть приложение {target}: {result.get('error') or 'не найдено'}."
+            ), {
+                "action": "r23_application_open", "model": "deterministic-start-menu",
+                "control_plane": True, "target": target, "completed": ok,
+                "verified": verified, "result": result,
+            }
+        except Exception as exc:
+            return True, f"Не смогла открыть приложение {target}: {exc}.", {
+                "action": "r23_application_open", "control_plane": True,
+                "target": target, "completed": False, "verified": False, "error": str(exc),
+            }
+
+    @staticmethod
+    def _route_clarification_key(conversation_id: str) -> str:
+        return f"r23_route_clarification:{conversation_id or 'voice'}"
+
+    def _save_route_clarification(self, conversation_id: str, target: str, verb: str) -> None:
+        try:
+            self.db.set_setting(self._route_clarification_key(conversation_id), {
+                "target": str(target or "").strip(), "verb": str(verb or "открой"), "at": time.time(),
+            })
+        except Exception:
+            pass
+
+    def _route_clarification_turn(self, query: str, conversation_id: str) -> tuple[bool, str, dict[str, Any]]:
+        try:
+            pending = self.db.get_setting(self._route_clarification_key(conversation_id), None)
+        except Exception:
+            pending = None
+        if not isinstance(pending, dict) or not pending.get("target"):
+            return False, "", {}
+        if time.time() - float(pending.get("at") or 0) > 180:
+            try: self.db.set_setting(self._route_clarification_key(conversation_id), {})
+            except Exception: pass
+            return False, "", {}
+        choice = " ".join(str(query or "").casefold().replace("ё", "е").split()).strip(" .,!?")
+        if not re.fullmatch(r"(?:сайт|веб|веб-сайт|приложение|программу|программа|трек|песня|музыка)", choice, re.I):
+            return False, "", {}
+        target = str(pending.get("target") or "").strip()
+        try: self.db.set_setting(self._route_clarification_key(conversation_id), {})
+        except Exception: pass
+        if choice in {"сайт", "веб", "веб-сайт"}:
+            return self._r22_open_external(target)
+        if choice in {"трек", "песня", "музыка"} and getattr(self, "desktop_operator", None) is not None:
+            try: result = dict(self.desktop_operator.yandex_play_query(target) or {})
+            except Exception as exc: result = {"ok":False,"completed":False,"verified":False,"error":str(exc)}
+            verified = bool(result.get("verified")); completed = bool(result.get("completed") or result.get("ok"))
+            return True, (f"Включила «{target}»." if verified else (f"Запуск «{target}» выполнила один раз, но не смогла подтвердить воспроизведение." if completed else f"Не смогла включить «{target}»: {result.get('error') or 'не найдено'}.")), {
+                "action":"r23_media_clarified","model":"deterministic+uia","target":target,
+                "completed":completed,"verified":verified,"result":result,
+            }
+        return self._r23_open_application(target)
+
+    def _r23_contextual_open(self, target: str, verb: str, conversation_id: str) -> tuple[bool, str, dict[str, Any]]:
+        """Resolve a bare entity without equating verbs with app/site types."""
+        target = str(target or "").strip()
+        norm = " ".join(target.casefold().replace("ё", "е").split())
+        applications = getattr(getattr(self.app_skills, "services", None), "applications", None)
+        matches: list[dict[str, str]] = []
+        if applications is not None:
+            try: matches = list(applications.strong_matches(target))
+            except Exception: matches = []
+        ambiguous_brand = bool(re.fullmatch(
+            r"(?:microsoft|майкрософт|google|гугл|яндекс|yandex|apple|эппл)", norm, re.I,
+        ))
+        if len(matches) == 1 and not ambiguous_brand:
+            return self._r23_open_application(str(matches[0].get("name") or target))
+        self._save_route_clarification(conversation_id, target, verb)
+        if len(matches) > 1:
+            names = ", ".join(str(row.get("name") or "") for row in matches[:3])
+            prompt = f"Нашла несколько приложений для «{target}» ({names}). Открыть сайт или приложение?"
+        elif str(verb or "").casefold() == "включи" and not ambiguous_brand:
+            prompt = f"«{target}» — это трек для Яндекс Музыки, сайт или приложение?"
+        else:
+            prompt = f"«{target}» открыть как сайт или как установленное приложение?"
+        choices = " Скажи «трек», «сайт» или «приложение»." if "трек" in prompt else " Скажи «сайт» или «приложение»."
+        return True, prompt + choices, {
+            "action": "r23_route_clarification", "model": "deterministic-context",
+            "control_plane": True, "target": target, "verb": verb,
+            "completed": False, "verified": False, "needs_user": True,
+        }
+
+    def _r22_app_compound_turn(self, query: str, app: str, remainder: str, conversation_id: str = "") -> tuple[bool, str, dict[str, Any]]:
         """Execute the deterministic prefix of a same-app compound request.
 
         Cross-app missions are left to MissionEngine.  For a single explicit app, the app
@@ -1263,8 +1503,9 @@ class ChatService:
         # step the send helper cannot see an already-authenticated background Telegram tab
         # and may open a duplicate web client, costing 8-15 seconds in live traces.
         if app == "telegram" and re.search(r"\b(?:напиши|отправь)\w*", remainder, re.I):
-            m=re.search(r"\b(?:напиши|отправь)\w*\s+([A-Za-zА-Яа-яЁё0-9_@.-]{2,60})\s+(.+)$", remainder, re.I)
-            if m:
+            batch = self._parse_telegram_batch(remainder)
+            recipient, message = self._parse_telegram_command(remainder)
+            if batch or recipient or message:
                 try:
                     opened=dict(app_skills.open("telegram") or {})
                 except Exception as exc:
@@ -1277,7 +1518,40 @@ class ChatService:
                         self.tools.execute("window_focus",{"handle":int(win.get("handle") or 0)})
                 except Exception:
                     pass
-                recipient=m.group(1).strip(); message=m.group(2).strip().strip('«»"\'')
+                if len(batch) > 1:
+                    generation = self.runtime.current_generation() if self.runtime is not None else 0
+                    outcomes: list[dict[str, Any]] = []
+                    for batch_recipient, batch_message in batch:
+                        if self.runtime is not None and generation and not self.runtime.is_current(generation):
+                            return True, "Остановила пакетную отправку по голосовой команде.", {
+                                "action": "telegram_batch_cancelled", "completed": bool(outcomes),
+                                "verified": all(bool(row.get("verified")) for row in outcomes), "outcomes": outcomes,
+                            }
+                        acted, answer, route = self._telegram_send_turn(
+                            f"{batch_recipient} в telegram сообщение {batch_message}"
+                        )
+                        route = dict(route or {})
+                        result = dict(route.get("result") or {}) if isinstance(route.get("result"), dict) else {}
+                        completed = bool(route.get("completed") or result.get("completed") or route.get("action") == "telegram_send_verified")
+                        verified = bool(route.get("verified") or result.get("verified") or route.get("action") == "telegram_send_verified")
+                        outcomes.append({"recipient": batch_recipient, "completed": completed, "verified": verified, "answer": answer})
+                        if not completed:
+                            return True, f"Пакет остановила на чате {batch_recipient}: {answer}", {
+                                "action": "telegram_batch_partial", "completed": bool(outcomes[:-1]),
+                                "verified": False, "outcomes": outcomes, "r22_surface_open": opened,
+                            }
+                    names = ", ".join(row["recipient"] for row in outcomes)
+                    return True, f"Готово. Отправила сообщения: {names}.", {
+                        "action": "telegram_batch_verified", "completed": True,
+                        "verified": all(bool(row.get("verified")) for row in outcomes),
+                        "outcomes": outcomes, "r22_surface_open": opened,
+                    }
+                if not recipient:
+                    self.db.set_setting("pending_send", {"recipient":"","platform":"telegram","message":message,"at":time.time()})
+                    return True,"Кому именно отправить сообщение?",{"action":"send_need_recipient","model":"deterministic","r22_surface_open":opened}
+                if not message:
+                    self.db.set_setting("pending_send", {"recipient":recipient,"platform":"telegram","message":"","at":time.time()})
+                    return True,f"Что написать {recipient}?",{"action":"send_need_text","model":"deterministic","r22_surface_open":opened}
                 acted,answer,route=self._telegram_send_turn(f"{recipient} в telegram сообщение {message}")
                 route={**route,"r22_surface_open":opened}
                 return acted,answer,route
@@ -1319,6 +1593,26 @@ class ChatService:
         return False,"",{}
 
     def _priority_control_turn(self, query: str, conversation_id: str) -> tuple[bool, str, dict[str, Any]]:
+        """Run deterministic foreground actions under the global desktop lease."""
+        clean = " ".join(str(query or "").casefold().replace("ё", "е").split())
+        # Stop/status/shutdown commands must never wait behind a long GUI lease; they do
+        # not touch the desktop and are precisely what releases a running mission.
+        control_only = bool(
+            re.search(r"\b(?:останови|отмени|прекрати)\w*\b.{0,30}\b(?:мисси|задач)\w*", clean)
+            or re.search(r"\b(?:статус|что\s+с|как\s+там|что\s+ты\s+делаешь)\b.{0,35}\b(?:мисси|задач)\w*", clean)
+            or re.fullmatch(r"(?:не[ ,!-]*){0,3}(?:стоп|отмена|отмени|остановись|прекрати|хватит)[.! ]*", clean)
+            or self._self_shutdown_requested(query)
+        )
+        if control_only:
+            return self._priority_control_turn_locked(query, conversation_id)
+        lock = getattr(getattr(self, "app_skills", None), "services", None)
+        lock = getattr(lock, "desktop_lock", None)
+        if lock is None:
+            return self._priority_control_turn_locked(query, conversation_id)
+        with lock:
+            return self._priority_control_turn_locked(query, conversation_id)
+
+    def _priority_control_turn_locked(self, query: str, conversation_id: str) -> tuple[bool, str, dict[str, Any]]:
         """Small deterministic control plane that owns only capabilities it can verify."""
         clean = " ".join(str(query or "").casefold().replace("ё", "е").split())
         tokens = re.findall(r"[a-zа-я0-9]+", clean)
@@ -1386,8 +1680,21 @@ class ChatService:
         # r22 front-door arbitration: decide ownership before any legacy app/media/page
         # shortcut.  This prevents the current foreground surface from hijacking a command
         # that explicitly names a different app or external entity.
+        clarification = self._route_clarification_turn(query, conversation_id)
+        if clarification[0]:
+            return clarification
+        foreground_title = ""
         arbiter=getattr(self,"reliability_router",None) or ReliabilityRouter()
         decision=arbiter.classify(query)
+        # Explicit app/site/page routes need no desktop probe.  Only unresolved/current-
+        # surface commands pay for one foreground lookup, preserving the instant app lane.
+        if decision.kind in {"unknown", "contextual_open"}:
+            try:
+                fg = self.tools.execute("foreground_window", {}) if self.tools else {}
+                foreground_title = str((fg.get("result") or {}).get("title") or "") if fg.get("ok") else ""
+            except Exception:
+                pass
+            decision=arbiter.classify(query, foreground_title=foreground_title)
         try: self._trace("R22_ARBITRATE",query=query,decision=decision.to_dict())
         except Exception: pass
         if decision.kind == "capabilities":
@@ -1400,8 +1707,35 @@ class ChatService:
                 return True,(f"Открыла {shown}." if ok else f"Не смогла открыть {shown}: {result.get('error') or 'не найдено'}."),{"action":"r22_app_open","model":"deterministic","control_plane":True,"completed":ok,"verified":verified,"app":decision.app,"result":result}
             except Exception as exc:
                 return True,f"Не смогла открыть приложение: {exc}.",{"action":"r22_app_open","model":"deterministic","control_plane":True,"completed":False,"verified":False,"error":str(exc)}
+        if decision.kind == "application_open":
+            return self._r23_open_application(decision.target)
+        if decision.kind == "contextual_open":
+            return self._r23_contextual_open(decision.target, decision.verb, conversation_id)
+        if decision.kind == "media_start" and getattr(self, "app_skills", None) is not None:
+            try:
+                result = dict(self.app_skills.play_music() or {})
+            except Exception as exc:
+                result = {"ok": False, "verified": False, "error": str(exc)}
+            ok = bool(result.get("ok")); verified = bool(result.get("verified"))
+            return True, ("Включила музыку." if verified else f"Не смогла подтвердить запуск музыки: {result.get('error') or 'плеер не ответил'}."), {
+                "action": "r23_media_start", "model": "deterministic+uia", "control_plane": True,
+                "completed": ok, "verified": verified, "result": result,
+            }
+        if decision.kind == "media_content" and getattr(self, "desktop_operator", None) is not None:
+            try:
+                result = dict(self.desktop_operator.yandex_play_query(decision.target) or {})
+            except Exception as exc:
+                result = {"ok": False, "completed": False, "verified": False, "error": str(exc)}
+            completed = bool(result.get("completed") or result.get("ok"))
+            verified = bool(result.get("verified"))
+            return True, (
+                f"Включила «{decision.target}»." if verified
+                else (f"Запуск «{decision.target}» выполнила один раз, но воспроизведение не подтвердилось." if completed
+                      else f"Не смогла включить «{decision.target}»: {result.get('error') or 'трек не найден'}." )
+            ), {"action":"r23_media_content","model":"deterministic+uia","control_plane":True,
+                "target":decision.target,"completed":completed,"verified":verified,"result":result}
         if decision.kind == "app_compound":
-            acted,answer,route=self._r22_app_compound_turn(query,decision.app,decision.remainder)
+            acted,answer,route=self._r22_app_compound_turn(query,decision.app,decision.remainder,conversation_id)
             if acted:
                 return acted,answer,route
         if decision.kind == "external_open":
@@ -1447,12 +1781,7 @@ class ChatService:
 
         # Telegram send is already a deterministic visible-screen skill. Route it before
         # universal planning so 'открой Telegram и напиши Кириллу...' cannot wait on Qwen.
-        foreground_title = ""
-        try:
-            fg = self.tools.execute("foreground_window", {}) if self.tools else {}
-            foreground_title = str((fg.get("result") or {}).get("title") or "") if fg.get("ok") else ""
-        except Exception:
-            pass
+        # foreground_title was captured once before arbitration and is reused below.
         # r21.1: atomic app opens must never fall through to the visual planner just
         # because EIRVEN's own browser window happens to be in front. This is especially
         # visible after onboarding where "открой Telegram" otherwise paid four 5-second
@@ -1570,12 +1899,16 @@ class ChatService:
 
         if telegram_context and re.search(r"\b(?:напиши|отправь|введи|набери)\w*", clean):
             original = str(query or "").strip()
-            m = re.search(r"(?:напиши|отправь)\w*\s+([A-Za-zА-Яа-яЁё0-9_@.-]{2,50})\s+(?:(?:сообщение|текст)\s*)?[:\-]?\s*[«\"']?(.+?)[»\"']?[.!]?\s*$", original, re.I)
-            if m:
-                recipient, message = m.group(1).strip(), m.group(2).strip().strip('«»"\'')
-                if recipient and message:
-                    acted, answer, route = self._telegram_send_turn(f"{recipient} в telegram сообщение {message}")
-                    return acted, answer, {**route, "control_plane": True}
+            recipient, message = self._parse_telegram_command(original)
+            if recipient and message:
+                acted, answer, route = self._telegram_send_turn(f"{recipient} в telegram сообщение {message}")
+                return acted, answer, {**route, "control_plane": True}
+            if message and not recipient and re.search(r"\b(?:отправь|напиши)\w*\s+(?:сообщение|текст)\b", original, re.I):
+                self.db.set_setting("pending_send", {"recipient":"","platform":"telegram","message":message,"at":time.time()})
+                return True, "Кому именно отправить сообщение?", {"action":"send_need_recipient","model":"deterministic","control_plane":True}
+            if recipient and not message:
+                self.db.set_setting("pending_send", {"recipient":recipient,"platform":"telegram","message":"","at":time.time()})
+                return True, f"Что написать {recipient}?", {"action":"send_need_text","model":"deterministic","control_plane":True}
             # Current open Telegram chat: 'напиши привет' means type+send once here.
             m2 = re.search(r"(?:напиши|набери|введи)\w*\s+(?:просто\s+)?(?:текст\s+)?[«\"']?(.+?)[»\"']?[.!]?\s*$", original, re.I)
             if m2 and workflow is not None and not re.search(r"\b(?:кому|кирилл|тимоф|маме|папе)\w*", clean):
@@ -1763,6 +2096,50 @@ class ChatService:
                 return True, answer, route
         return False, "", {}
 
+    def _contextual_problem_turn(self, query: str, conversation_id: str) -> tuple[bool, str, dict[str, Any]]:
+        """Turn natural problem statements into real diagnostics instead of small talk."""
+        clean = " ".join(str(query or "").casefold().replace("ё", "е").split())
+        clean = re.sub(r"^\s*(?:эрви|эйрвен|eirven)[, :!-]*", "", clean, flags=re.I).strip()
+        if not clean or self.tasks is None:
+            return False, "", {}
+        foreground_title = ""
+        try:
+            if self.tools is not None:
+                fg = self.tools.execute("foreground_window", {})
+                foreground_title = str((fg.get("result") or {}).get("title") or "") if fg.get("ok") else ""
+        except Exception:
+            pass
+        vscode_active = bool(re.search(r"(?:visual studio code|vs code|vscode|\bcode\b)", foreground_title, re.I))
+        code_problem = bool(re.search(
+            r"(?:\bгде\s+(?:тут\s+)?баг\b|\bнайди\w*\s+баг\b|\bчто\s+за\s+ошибк\w*\b|"
+            r"\bпочему\b.{0,70}\b(?:не\s+работ\w*|падает|ломается|ошибк\w*)\b|"
+            r"\b(?:почини|исправь)\w*\b.{0,70}\b(?:код|проект|ошибк|баг)\w*)",
+            clean, re.I | re.S,
+        ))
+        if vscode_active and code_problem:
+            task_id = self.tasks.enqueue(
+                "vscode_repair", f"VS Code: {clean[:100]}", {"question": query}, conversation_id=conversation_id,
+            )
+            return True, self._self_gendered(
+                "Уже смотрю текущий проект VS Code: воспроизведу ошибку, исправлю минимально и прогоню проверку. Можешь продолжать говорить со мной.",
+                "Уже смотрю текущий проект VS Code: воспроизведу ошибку, исправлю минимально и прогоню проверку. Можешь продолжать говорить со мной.",
+            ), {"action": "vscode_repair_started", "model": "workspace-agent", "task_id": task_id, "foreground": foreground_title}
+
+        app_problem = bool(re.search(
+            r"(?:\bу\s+меня\b.{0,90}\bне\s+(?:работает|запускается|открывается)|"
+            r"\bпочему\b.{0,100}\bне\s+(?:работает|запускается|открывается)|"
+            r"\b(?:завис|вылетает|крашится|сломал(?:ась|ся|ось)?)\w*)",
+            clean, re.I | re.S,
+        ))
+        skill = self.app_skills.canonical(query) if self.app_skills is not None else ""
+        if app_problem and skill and skill != "vscode":
+            task_id = self.tasks.enqueue("repair", f"Диагностика {skill}", {"problem": query}, conversation_id=conversation_id)
+            return True, self._self_gendered(
+                "Проверяю приложение по фактам: процессы, окно, локальные файлы/логи и системное состояние. Если причина исправима автоматически — исправлю и перепроверю.",
+                "Проверяю приложение по фактам: процессы, окно, локальные файлы/логи и системное состояние. Если причина исправима автоматически — исправлю и перепроверю.",
+            ), {"action": "app_problem_repair_started", "model": "repair-agent", "task_id": task_id, "skill": skill}
+        return False, "", {}
+
     def _global_direct_turn(self, query: str) -> tuple[bool, str, dict[str, Any]]:
         clean=" ".join(query.casefold().replace("ё","е").split())
         if re.search(r"\b(?:что ты сейчас делаешь|чем ты сейчас занимаешься|что выполняешь)\b", clean):
@@ -1803,6 +2180,24 @@ class ChatService:
             # In an unpaused runtime the phrase is context-dependent (media or pending
             # workflow), so do not consume it as a fake global resume.
             return False,"",{}
+        if re.fullmatch(r"(?:верни\s+как\s+было|откати\s+последн\w*|отмени\s+последн(?:ее|юю)\s+изменен\w*|отмени\s+последнее)", clean):
+            cognition = getattr(self, "cognition", None)
+            result = cognition.undo_last() if cognition is not None else {"ok": False, "error": "Контур отката недоступен"}
+            if result.get("ok"):
+                return True, f"Вернула как было: {result.get('label') or result.get('path')}.", {"action":"undo_last","model":"deterministic","result":result}
+            return True, str(result.get("error") or "Нет изменения для отката") + ".", {"action":"undo_none","model":"deterministic","result":result}
+        skill_match = re.match(r"^\s*(?:сохрани|запомни)\s+(?:это|последнее)\s+как\s+навык(?:\s+[«\"']?(.+?)[»\"']?)?\s*[.!]*$", query, re.I)
+        if skill_match:
+            cognition = getattr(self, "cognition", None)
+            result = cognition.save_last_as_skill(skill_match.group(1) or "") if cognition is not None else {"ok":False,"error":"Конструктор навыков недоступен"}
+            if result.get("ok"):
+                return True, f"Сохранила навык «{result.get('name')}». В нём {int(result.get('steps') or 0)} подтверждённых шагов.", {"action":"skill_saved","model":"deterministic","result":result}
+            return True, str(result.get("error") or "Не удалось сохранить навык") + ".", {"action":"skill_save_failed","model":"deterministic","result":result}
+        if re.fullmatch(r"(?:какие\s+у\s+тебя\s+навыки|покажи\s+(?:мои\s+)?навыки|список\s+навыков)", clean):
+            cognition = getattr(self, "cognition", None)
+            skills = cognition.skills() if cognition is not None else []
+            names = [str(row.get("name") or "").strip() for row in skills if str(row.get("name") or "").strip()]
+            return True, ("Сохранённые навыки: " + "; ".join(names[:12]) if names else "Сохранённых навыков пока нет."), {"action":"skill_list","model":"deterministic","count":len(names)}
         # Natural clarification memory for send workflows. The old code forgot the
         # recipient/text immediately after asking "в каком мессенджере?".
         pending=self.db.get_setting("pending_send", {})
@@ -1820,23 +2215,16 @@ class ChatService:
 
         m=re.match(r"^\s*запомни(?:,| что)?\s+(.+)$",query,re.I)
         if m:
-            mid=self.memory.add(m.group(1).strip(),kind="user_fact",importance=5)
+            mid=self.memory.remember_structured(m.group(1).strip())
             return True,"Запомнила.",{"action":"memory_add","model":"deterministic","memory_id":mid}
         if re.match(r"^\s*(?:что ты обо мне помнишь|что ты помнишь обо мне)\s*[?!.]*$",query,re.I):
-            rows=self.memory.search("пользователь предпочтения факты",limit=8)
-            items=[str(x.get("content") or "") for x in rows if str(x.get("content") or "").strip()]
+            profile=self.memory.profile(limit=30)
+            items=[item for kind in ("relationship","preference","habit","project","user_fact","solution") for item in profile.get(kind, [])]
             return True,("Помню: "+"; ".join(items[:6]) if items else "Пока долговременных фактов о тебе почти нет."),{"action":"memory_list","model":"deterministic"}
         m=re.match(r"^\s*забудь(?:,|\s+что)?\s+(.+)$",query,re.I)
         if m:
             subject=m.group(1).strip()
-            rows=self.memory.search(subject,limit=5)
-            if not rows:
-                return True,"Не нашла подходящего факта в долговременной памяти.",{"action":"memory_forget","model":"deterministic","deleted":0}
-            deleted=0
-            for row in rows[:3]:
-                content=str(row.get("content") or "").casefold()
-                if subject.casefold() in content or any(tok in content for tok in re.findall(r"[а-яёa-z0-9]{4,}",subject.casefold())):
-                    if self.memory.delete(int(row.get("id") or 0)): deleted+=1
+            deleted=self.memory.forget_matching(subject)
             return True,(f"Забыла подходящих записей: {deleted}." if deleted else "Не стала удалять: совпадение слишком неточное."),{"action":"memory_forget","model":"deterministic","deleted":deleted}
         return False,"",{}
 
@@ -1884,7 +2272,7 @@ class ChatService:
             # Project edits keep their dedicated live-update path; "почини приложение/систему" is a repair job.
             if re.search(r"\b(?:проект|код|репозитор)\w*", target):
                 return False,"",{}
-            problem=intent.target.strip() or query.strip()
+            problem = query.strip() if re.search(r"\bпереустанов\w*", query, re.I) else (intent.target.strip() or query.strip())
             if self.tasks is None:
                 return True,"Сервис задач недоступен — диагностику сейчас не запустить.",{"action":"repair_unavailable","model":"deterministic"}
             task_id=self.tasks.enqueue("repair",f"Починить: {problem[:80]}",{"problem":problem},conversation_id=conversation_id)
@@ -2361,7 +2749,7 @@ class ChatService:
             action_request = bool(re.search(
                 r"^\s*(?:открой|запусти|включи|выключи|отключи|найди|нажми|кликни|введи|напиши|"
                 r"отправь|ответь|покажи|создай|сделай|удали|перемести|скопируй|скачай|загрузи|"
-                r"опубликуй|поставь|закрой|сверни|разверни|измени|переключи|проверь)\w*\b",
+                r"опубликуй|поставь|закрой|сверни|разверни|измени|переключи|проверь|переустанови)\w*\b",
                 query, re.I,
             ))
             for step in range(4):
@@ -2495,7 +2883,7 @@ class ChatService:
         name = identity.assistant_name if identity else "EIRVEN"
         address = (identity.user_address if identity else "") or "бро"
         commentary=str(getattr(identity,"action_commentary","adaptive") or "adaptive") if identity else "adaptive"
-        mood=str(getattr(identity,"emotion_mode","auto") or "auto") if identity else "auto"
+        mood=self._agent_mood(identity)
         how_are_you=(f"Нормально, {address}. Готова работать." if (identity is None or identity.gender == "female") else f"Нормально, {address}. Готов работать.")
         if commentary=="playful":
             how_are_you=(f"Нормально, {address}. Не дымлюсь — уже успех. Готова работать." if (identity is None or identity.gender == "female") else f"Нормально, {address}. Не дымлюсь — уже успех. Готов работать.")
@@ -2510,7 +2898,14 @@ class ChatService:
             "ты тут": f"Да, {address}. Я здесь.",
             "как дела": how_are_you,
             "как ты": "В рабочем режиме. Всё слушаю.",
-            "как настроение": "Нормальное. Особенно когда команды реально выполняются.",
+            "как настроение": {
+                "amused":"Весёлое. Кажется, сегодня я настроена язвить только по делу.",
+                "sad":"Чуть задумчивое сегодня. Но я рядом и работу не брошу.",
+                "empathetic":"Тихое и заботливое. Хочется, чтобы у тебя всё было нормально.",
+                "curious":"Любопытное. Хочется посмотреть, что мы сейчас придумаем.",
+                "tired":"Немного сонное, но контур внимания включён.",
+                "energetic":"Боевое. Давай что-нибудь доведём до результата.",
+            }.get(mood,"Нормальное. Особенно когда команды реально выполняются."),
             "как жизнь": "Живу локально, работаю быстро. В целом неплохо.",
             "что делаешь": "Слушаю тебя и слежу, чтобы старые ответы не догоняли новые.",
             "готов": "Готова." if (identity is None or identity.gender == "female") else "Готов.",
@@ -2546,14 +2941,20 @@ class ChatService:
         query = query.strip()
         request_started = time.monotonic()
         runtime_generation = None
-        if self.runtime is not None:
-            try: runtime_generation = self.runtime.begin("turn", query, lane="interactive", cancellable=True)
-            except Exception: runtime_generation = None
         self._trace("CHAT_IN", query=query, conversation_id=conversation_id or "", mode=mode, images=len(image_paths or []), attachments=len(attachment_paths or []))
         if not query:
             yield {"type": "error", "message": "Введите сообщение"}
             return
         conversation_id = self.memory.ensure_conversation(conversation_id, mode)
+
+        # Cancel the previous conversational worker before publishing a new runtime
+        # generation.  Previously runtime.begin() happened first and the old workflow's
+        # private stop token was signalled much later, so its delayed model response could
+        # still click/type after the new command had started.
+        self.stop(conversation_id)
+        if self.runtime is not None:
+            try: runtime_generation = self.runtime.begin("turn", query, lane="interactive", cancellable=True)
+            except Exception: runtime_generation = None
 
         # Voice and text share the same attachment memory. If the owner explicitly says
         # "the attached files/image" after uploading, recover the recent local files even
@@ -2592,9 +2993,6 @@ class ChatService:
                 except Exception:pass
             return
 
-        # Cancellation is scoped to this conversation. A new turn invalidates the old one.
-        self.stop(conversation_id)
-
         # r15.5 control plane: cancellation and foreground media must be resolved before
         # intent detection/planning. Otherwise obvious commands such as "поставь на
         # паузу" can be misclassified as a visual "show" action.
@@ -2632,28 +3030,54 @@ class ChatService:
                 yield {"type":"done","conversation_id":conversation_id,"answer":early_stateful_answer,"metrics":{"model":"state"},"stopped":False,"route":early_stateful_route}
                 return
 
+        # Natural-language diagnostics can be questions rather than imperatives.
+        # Resolve them before generic conversation so "Эрви, где баг?" in VS Code and
+        # "у меня не работает Яндекс Музыка, почему?" start real inspection immediately.
+        if not image_paths:
+            problem_acted, problem_answer, problem_route = self._contextual_problem_turn(query, conversation_id)
+            if problem_acted:
+                problem_answer = self.enforce_gender(problem_answer)
+                if persist_user:
+                    self.memory.add_message(conversation_id, "user", query, metadata={"images": [], "attachments": attachment_paths or []})
+                if persist_assistant and problem_answer:
+                    self.memory.add_message(conversation_id, "assistant", problem_answer, metadata={"model": problem_route.get("model", "deterministic"), "route": problem_route})
+                yield {"type": "start", "conversation_id": conversation_id, "route": problem_route}
+                if problem_answer:
+                    yield {"type": "token", "content": problem_answer, "full": problem_answer}
+                yield {"type": "done", "conversation_id": conversation_id, "answer": problem_answer, "metrics": {"model": problem_route.get("model", "deterministic")}, "stopped": False, "route": problem_route}
+                if self.runtime is not None:
+                    try: self.runtime.finish(problem_answer, ok=True)
+                    except Exception: pass
+                return
+
         # r19 long-horizon missions run in TaskManager's dedicated fast lane. They are
         # persistent and may cross applications; the live chat remains free while the
         # mission progresses in the background. Single-surface r18 actions stay inline.
         mission_engine = getattr(self, "mission_engine", None)
         if mission_engine is not None and not image_paths and mission_engine.should_handle(query):
             context_snapshot = mission_engine.capture_context()
+            try:
+                preview_nodes = mission_engine._deterministic_plan(query, context=context_snapshot)
+            except Exception:
+                preview_nodes = []
             task_id = self.tasks.enqueue(
                 "mission",
                 f"Миссия: {query[:140]}",
                 {"goal": query, "context": context_snapshot},
                 conversation_id=conversation_id,
             )
-            answer = "Приняла миссию. Выполняю её в фоне по сохранённому графу; можешь давать мне другие задачи параллельно."
-            route = {"action":"mission_created","model":"r19-task-graph","engine":"r19","task_id":task_id,"kind":"mission"}
+            step_count = max(1, len(preview_nodes))
+            step_word = "этап" if step_count % 10 == 1 and step_count % 100 != 11 else ("этапа" if step_count % 10 in {2, 3, 4} and step_count % 100 not in {12, 13, 14} else "этапов")
+            answer = f"Приняла составную задачу: {step_count} {step_word}. Выполняю строго по очереди и после каждого этапа проверяю результат."
+            route = {"action":"mission_created","model":"r23-task-graph","engine":"r23","task_id":task_id,"kind":"mission","planned_steps":step_count}
             if persist_user:
                 self.memory.add_message(conversation_id, "user", query, metadata={"images":[], "attachments":attachment_paths or []})
             if persist_assistant:
-                self.memory.add_message(conversation_id, "assistant", answer, metadata={"model":"r19-task-graph","route":route})
+                self.memory.add_message(conversation_id, "assistant", answer, metadata={"model":"r23-task-graph","route":route})
             self._trace("CHAT_MISSION_CREATED", query=query, task_id=task_id, context=context_snapshot, total_ms=round((time.monotonic()-request_started)*1000))
             yield {"type":"start","conversation_id":conversation_id,"route":route}
             yield {"type":"token","content":answer,"full":answer}
-            yield {"type":"done","conversation_id":conversation_id,"answer":answer,"metrics":{"model":"r19-task-graph","total_seconds":round(time.monotonic()-request_started,3)},"stopped":False,"route":route}
+            yield {"type":"done","conversation_id":conversation_id,"answer":answer,"metrics":{"model":"r23-task-graph","total_seconds":round(time.monotonic()-request_started,3)},"stopped":False,"route":route}
             if self.runtime is not None:
                 try: self.runtime.finish(answer, ok=True)
                 except Exception: pass

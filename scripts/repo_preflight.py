@@ -6,7 +6,7 @@ import tomllib
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-EXPECTED_VERSION = "1.2.2"
+EXPECTED_VERSION = "1.4.0"
 
 SKIP_DIRS = {
     ".git", ".venv", "venv", "build", "dist", "release", "models", "logs",

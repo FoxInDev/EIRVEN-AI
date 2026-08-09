@@ -8,6 +8,7 @@ from typing import Any
 
 from .config import Settings
 from .llm import LLMError, ModelGateway
+from .resilience import AdaptiveRecovery
 from .style import StyleStore
 from .tasks import TaskNeedsUser
 from .tools import ToolExecutor
@@ -183,15 +184,21 @@ class LocalAgent:
         used_tool = False
         used_side_effect = False
         verified_after_effect = False
+        recovery = AdaptiveRecovery(attempts_per_strategy=4, max_strategy_changes=3)
+        executed_single_shot: set[str] = set()
         side_effect_tools = {
             "write_file", "make_directory", "system_write_file", "system_open_path", "system_open_named",
-            "powershell", "git_publish", "open_default_url", "default_search", "launch_application", "close_application",
+            "powershell", "reinstall_application", "git_publish", "open_default_url", "default_search", "launch_application", "close_application",
             "close_browsers", "close_user_apps", "set_dark_theme", "toggle_quick_setting", "window_focus", "window_click",
             "window_type", "mouse_move", "mouse_drag", "scroll", "press_key", "hotkey", "click", "type_text", "media_control",
         }
         observation_tools = {
             "desktop_state", "access_status", "foreground_window", "window_list", "window_elements", "window_wait", "process_list",
             "system_find", "system_list_files", "system_read_file", "system_diagnostics", "command_available", "web_search",
+        }
+        single_shot_tools = {
+            "write_file", "system_write_file", "reinstall_application", "git_publish",
+            "browser_fill", "window_type", "type_text",
         }
 
         with self.tools.task_scope(external_stop_event):
@@ -212,9 +219,23 @@ class LocalAgent:
                         num_gpu=num_gpu,
                     )
                 except LLMError as exc:
+                    directive = recovery.record_failure(
+                        signature=AdaptiveRecovery.signature("model", type(exc).__name__, str(exc)[:200]),
+                        reason=f"local model error: {exc}",
+                    )
+                    if directive.action in {"continue", "switch_strategy"} and step < steps:
+                        messages.append({
+                            "role": "user",
+                            "content": (
+                                "Предыдущий вызов модели/маршрут не сработал. Снова наблюдай фактическое состояние и продолжи. "
+                                + ("Четыре подхода исчерпаны — смени класс решения и не повторяй прежние команды. " if directive.action == "switch_strategy" else "")
+                                + recovery.prompt_context()
+                            ),
+                        })
+                        continue
                     if transcript:
-                        return "\n".join(transcript + [f"Модель остановилась: {exc}"])
-                    return f"Не удалось выполнить задачу: {exc}"
+                        return "\n".join(transcript + [f"Все доступные стратегии модели исчерпаны: {exc}"])
+                    return f"Все доступные стратегии модели исчерпаны: {exc}"
 
                 tool_calls = list(response.get("tool_calls") or [])
                 content = str(response.get("content") or "").strip()
@@ -225,9 +246,33 @@ class LocalAgent:
 
                 if not tool_calls:
                     if require_tool_action and not used_tool:
-                        return "Не удалось выполнить задачу: модель не выбрала ни одного реального действия на компьютере."
+                        directive = recovery.record_failure(
+                            signature=AdaptiveRecovery.signature("no-tool", content[:300]),
+                            reason="model selected no real computer action",
+                        )
+                        if directive.action in {"continue", "switch_strategy"} and step < steps:
+                            messages.append({
+                                "role": "user",
+                                "content": (
+                                    "Ответ без инструмента не выполняет задачу. Наблюдай состояние и вызови реальный инструмент. "
+                                    + ("После четырёх неудач полностью смени подход. " if directive.action == "switch_strategy" else "")
+                                    + recovery.prompt_context()
+                                ),
+                            })
+                            continue
+                        return "Все доступные стратегии исчерпаны: модель не выбрала реального действия на компьютере."
                     if require_side_effect and not used_side_effect:
-                        return "Не удалось выполнить задачу: модель только посмотрела состояние, но не выполнила требуемое изменение."
+                        directive = recovery.record_failure(
+                            signature=AdaptiveRecovery.signature("no-side-effect", content[:300]),
+                            reason="observed state but made no required change",
+                        )
+                        if directive.action in {"continue", "switch_strategy"} and step < steps:
+                            messages.append({
+                                "role": "user",
+                                "content": "Наблюдения недостаточно: выполни требуемое изменение другим безопасным способом. " + recovery.prompt_context(),
+                            })
+                            continue
+                        return "Все доступные стратегии исчерпаны: требуемое изменение не было выполнено."
                     if require_verification and used_side_effect and not verified_after_effect and step < steps:
                         messages.append({
                             "role": "user",
@@ -246,13 +291,38 @@ class LocalAgent:
                     name, arguments = self._tool_call(call)
                     if not name:
                         continue
-                    result = self.tools.execute(name, arguments)
+                    tool_signature = AdaptiveRecovery.signature(name, arguments)
+                    if name in single_shot_tools and tool_signature in executed_single_shot:
+                        result = {
+                            "ok": False,
+                            "error": "Это изменяющее действие уже выполнялось; повтор заблокирован во избежание дубля.",
+                            "completed": True,
+                            "verified": False,
+                        }
+                    else:
+                        result = self.tools.execute(name, arguments)
                     used_tool = True
                     if name in side_effect_tools:
                         used_side_effect = True
                         verified_after_effect = False
+                        if result.get("ok") and name in single_shot_tools:
+                            executed_single_shot.add(tool_signature)
                     elif used_side_effect and name in observation_tools and result.get("ok"):
                         verified_after_effect = True
+                    inner = result.get("result") or {}
+                    tool_ok = bool(result.get("ok")) and not (
+                        isinstance(inner, dict)
+                        and (inner.get("ok") is False or int(inner.get("returncode", 0) or 0) != 0)
+                    )
+                    if tool_ok:
+                        recovery.record_success()
+                    else:
+                        directive = recovery.record_failure(
+                            signature=tool_signature,
+                            reason=str(result.get("error") or inner)[:500],
+                            completed=bool(result.get("completed")),
+                            verified=bool(result.get("verified")),
+                        )
                     if auto_vision and name == "screenshot" and result.get("ok"):
                         path = str((result.get("result") or {}).get("path") or "")
                         if path:
@@ -268,5 +338,16 @@ class LocalAgent:
                             "content": self._compact_result(result, 5000),
                         }
                     )
+                    if not tool_ok and directive.action == "switch_strategy":
+                        messages.append({
+                            "role": "user",
+                            "content": (
+                                "Четыре инструментальных подхода не дали результата. Смени план: используй другой источник наблюдения, "
+                                "другой инструмент или другой маршрут к цели. Не повторяй прежнюю сигнатуру. "
+                                + recovery.prompt_context()
+                            ),
+                        })
+                    elif not tool_ok and directive.action in {"stop", "stop_uncertain_commit"}:
+                        return "Перепробовала доступные безопасные стратегии; дальше потребовалось бы повторить рискованное или уже выполненное действие."
 
         return "Достигнут лимит шагов. Последние действия:\n" + "\n".join(transcript[-6:])

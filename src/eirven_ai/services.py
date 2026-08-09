@@ -46,6 +46,7 @@ from .recovery import RecoveryEngine
 from .universal_workflow import UniversalWorkflowEngine
 from .autonomous_workflow import AutonomousWorkflowEngine
 from .mission_engine import MissionEngine
+from .cognition import AgentCognition
 
 
 TELEGRAM_RULE_SCHEMA: dict[str, Any] = {
@@ -110,6 +111,7 @@ class Services:
     companion: DesktopCompanion
     game: GamePilot
     creative: CreativeService
+    cognition: AgentCognition
     voice_daemon: NativeVoiceDaemon | None = None
     camera: Any | None = None
     modes: ModeController | None = None
@@ -128,6 +130,10 @@ class Services:
     universal_workflow: UniversalWorkflowEngine | None = None
     autonomous_workflow: AutonomousWorkflowEngine | None = None
     mission_engine: MissionEngine | None = None
+    # Every component that can touch the visible Windows desktop must share this
+    # re-entrant lock.  Separate per-engine locks allowed an old visual workflow and a
+    # new Telegram command to type/click into the same foreground window concurrently.
+    desktop_lock: Any | None = None
 
 
 def build_services(settings: Settings | None = None) -> Services:
@@ -216,6 +222,8 @@ def build_services(settings: Settings | None = None) -> Services:
     runtime = RuntimeControl()
     offline_cache = OfflineCache(db)
     learning = InterfaceLearning(db)
+    cognition = AgentCognition(db, settings.data_dir)
+    desktop_lock = threading.RLock()
 
     chat = ChatService(settings, db, gateway, router, memory, style, identity)
     chat.attach_runtime(tools, tasks, modes=modes, camera=camera, voice=voice)
@@ -246,11 +254,13 @@ def build_services(settings: Settings | None = None) -> Services:
         companion=companion,
         game=game,
         creative=creative,
+        cognition=cognition,
         camera=camera,
         modes=modes,
         runtime=runtime,
         offline_cache=offline_cache,
         learning=learning,
+        desktop_lock=desktop_lock,
     )
 
     # Components that need the assembled Services graph are bound in a second phase.
@@ -259,6 +269,8 @@ def build_services(settings: Settings | None = None) -> Services:
     # primitive can respect the voice pre-commit hold without coupling tools.py to the
     # whole Services graph.
     setattr(tools, "runtime_control", runtime)
+    setattr(tools, "desktop_lock", desktop_lock)
+    setattr(tools, "cognition", cognition)
     capabilities = CapabilityRegistry(services)
     desktop_operator = DesktopOperator(services, learning)
     app_skills = AppSkills(services, desktop_operator)
@@ -296,6 +308,14 @@ def build_services(settings: Settings | None = None) -> Services:
     setattr(chat, "universal_workflow", universal_workflow)
     setattr(chat, "autonomous_workflow", autonomous_workflow)
     setattr(chat, "mission_engine", mission_engine)
+    setattr(chat, "cognition", cognition)
+    telegram.bind_remote_handler(
+        lambda command, chat_id: chat.complete(
+            command,
+            conversation_id=f"telegram-remote-{str(chat_id)[-32:]}",
+            mode="Друг",
+        )
+    )
 
     def notify(context: TaskContext, content: str, metadata: dict[str, Any]) -> None:
         if context.conversation_id:
@@ -364,6 +384,25 @@ def build_services(settings: Settings | None = None) -> Services:
             context,
             summary,
             {"task_id": context.task_id, "kind": "mission", "result": result},
+        )
+        return result
+
+    def vscode_repair_handler(context: TaskContext, payload: dict[str, Any]) -> dict[str, Any]:
+        question = str(payload.get("question") or payload.get("problem") or "Найди баг в текущем проекте VS Code и исправь его").strip()
+        context.set_total(3)
+        context.update("Определяю открытый проект VS Code", completed_steps=0, progress=0.08)
+        context.update("Проверяю код, тесты и ошибку", completed_steps=1, progress=0.24)
+        result = app_skills.repair_vscode(question)
+        if not result.get("ok"):
+            raise RuntimeError(str(result.get("error") or "Не удалось исправить проект VS Code"))
+        context.update("Перепроверяю исправление", completed_steps=2, progress=0.88)
+        context.update("Исправление VS Code завершено", completed_steps=3, progress=0.99)
+        report = gender_guard(str(result.get("answer") or "Исправление завершено."))
+        result["answer"] = report
+        notify(
+            context,
+            self_gendered(f"Проект в VS Code исправила и перепроверила. {report}", f"Проект в VS Code исправил и перепроверил. {report}"),
+            {"task_id": context.task_id, "kind": "vscode_repair", "result": result},
         )
         return result
 
@@ -764,6 +803,7 @@ def build_services(settings: Settings | None = None) -> Services:
     tasks.register("agent", background(agent_handler))
     tasks.register("mission", background(mission_handler))
     tasks.register("repair", background(repair_handler))
+    tasks.register("vscode_repair", background(vscode_repair_handler))
     tasks.register("git_action", background(git_action_handler))
     tasks.register("screen_query", background(screen_query_handler))
     tasks.register("crypto_price", background(crypto_handler))
@@ -806,5 +846,10 @@ def build_services(settings: Settings | None = None) -> Services:
         services.companion.set_status_provider(companion_status)
     except Exception:
         pass
-    services.proactive = ProactiveObserver(db, lambda: services.voice_daemon, tools)
+    services.proactive = ProactiveObserver(
+        db,
+        lambda: services.voice_daemon,
+        tools,
+        services_provider=lambda: services,
+    )
     return services

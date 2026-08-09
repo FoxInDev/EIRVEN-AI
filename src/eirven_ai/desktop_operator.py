@@ -27,13 +27,20 @@ class DesktopOperator:
         self.tools = services.tools
         self.gateway = services.gateway
         self.learning = learning
-        self._lock = threading.RLock()
+        self._lock = getattr(services, "desktop_lock", None) or threading.RLock()
 
     @staticmethod
     def _norm(text: str) -> str:
         text = str(text or "").casefold().replace("ё", "е")
         text = re.sub(r"[^a-zа-я0-9]+", " ", text)
         return re.sub(r"\s+", " ", text).strip()
+
+    @staticmethod
+    def _element_blob(element: dict[str, Any]) -> str:
+        return " ".join(
+            str(element.get(key) or "")
+            for key in ("control_type", "name", "value", "automation_id", "class_name")
+        )
 
     def _trace(self, event: str, **data: Any) -> None:
         try:
@@ -164,8 +171,18 @@ class DesktopOperator:
         title = str(acquired.get("title") or "")
         handle = int(acquired.get("handle") or 0) or None
         rows = self._elements(title, limit=420, handle=handle)
-        if "telegram" in self._norm(title):
-            send = self._telegram_send_button(rows, ready_only=True)
+        # Telegram Web changes the browser tab/window title to the active contact on
+        # some Chromium builds.  The stable evidence is its unique ``btn-send`` class,
+        # not the word Telegram in the title.
+        send = self._telegram_send_button(rows, ready_only=True)
+        empty_button = self._telegram_send_button(rows, ready_only=False)
+        telegram_surface = bool(
+            "telegram" in self._norm(title)
+            or "телеграм" in self._norm(title)
+            or send is not None
+            or empty_button is not None
+        )
+        if telegram_surface:
             if send is not None:
                 ok = self.click_element(title, send, goal="telegram_send_message_commit")
                 self._trace("OPERATOR_COMMIT", app="telegram", method="send_button", ok=ok)
@@ -175,7 +192,6 @@ class DesktopOperator:
                 }
             # Native Telegram clients do not always publish a Send button through UIA.
             # Enter remains a single-shot fallback only when no web btn-send exists.
-            empty_button = self._telegram_send_button(rows, ready_only=False)
             if empty_button is not None:
                 return {
                     "ok": False, "committed": False, "method": "send_button",
@@ -361,9 +377,17 @@ class DesktopOperator:
         if not fg.get("ok"): return {"ok":False,"error":"Не вижу активное окно"}
         win=dict(fg.get("result") or {}); title=str(win.get("title") or ""); handle=int(win.get("handle") or 0) or None
         def rows(): return self._elements(title,limit=360,handle=handle)
+        def search_safe(element):
+            blob=self._norm(f"{element.get('name','')} {element.get('value','')} {element.get('automation_id','')} {element.get('class_name','')}")
+            if any(mark in blob for mark in ("сортир","sort","фильтр","filter","диапазон цен","price range","quantity","количество")):
+                return False
+            return any(self._norm(alias) in blob for alias in aliases if self._norm(alias))
         def field(current):
             roles=("Edit","ComboBox","Group","Document")
-            return self.resolve_element(title,aliases,handle=handle,roles=roles,purpose=purpose,content_only=True,rows=current)
+            candidates=current
+            if purpose == "search":
+                candidates=[element for element in current if search_safe(element)]
+            return self.resolve_element(title,aliases,handle=handle,roles=roles,purpose=purpose,content_only=True,rows=candidates)
         moved=0; current=rows(); target=field(current)
         # Web apps often expose a placeholder as Text while the actual contenteditable
         # is an unnamed focusable Group/Document. Use the visible descriptor only to
@@ -384,6 +408,14 @@ class DesktopOperator:
                 if clicked:
                     state=self.wait_for_state(handle=handle,title=title,before_rows=before,timeout=6.0,expected=aliases)
                     title=str(state.get("title") or title); current=list(state.get("rows") or rows()); target=field(current)
+                    if target is None and purpose == "search":
+                        target=next((
+                            element for element in current
+                            if element.get("focused")
+                            and self._norm(element.get("control_type")) in {"edit","combobox"}
+                            and not self._is_browser_chrome(element)
+                            and not any(mark in self._norm(self._element_blob(element)) for mark in ("сортир","sort","фильтр","filter"))
+                        ),None)
         while target is None and moved<max(0,int(max_scrolls)):
             self.tools.execute("scroll",{"amount":-6}); moved+=1; time.sleep(.22)
             current=rows(); target=field(current)
@@ -431,6 +463,10 @@ class DesktopOperator:
         if not acquired.get("ok") or not text:
             return {"ok":False,"completed":False,"verified":False,"error":"Нет готового поля или текста"}
         title=str(acquired.get("title") or ""); handle=int(acquired.get("handle") or 0) or None; field=dict(acquired.get("field") or {})
+        if str(acquired.get("purpose") or "") == "search":
+            field_blob=self._norm(self._element_blob(field))
+            if any(mark in field_blob for mark in ("сортир","sort","фильтр","filter","диапазон цен","price range","quantity","количество")):
+                return {"ok":False,"completed":False,"verified":False,"error":"Поле сортировки/фильтра отклонено: это не поиск страницы"}
         # Re-focus immediately before typing; state may have changed after a SPA transition.
         if not self._click_input_rect(field):
             return {"ok":False,"completed":False,"verified":False,"error":"Не удалось вернуть фокус в поле"}
@@ -458,8 +494,13 @@ class DesktopOperator:
             return {"ok":False,"completed":False,"verified":False,"error":"Ввод не выполнился"}
         payload=self._norm(text)
         purpose=str(acquired.get("purpose") or "")
-        telegram_composer=purpose=="composer" and "telegram" in self._norm(title)
-        ready_before=bool(self._telegram_send_button(list(acquired.get("rows") or []),ready_only=True)) if telegram_composer else False
+        acquired_rows = list(acquired.get("rows") or [])
+        telegram_composer = purpose == "composer" and bool(
+            "telegram" in self._norm(title)
+            or "телеграм" in self._norm(title)
+            or self._telegram_send_button(acquired_rows, ready_only=False) is not None
+        )
+        ready_before=bool(self._telegram_send_button(acquired_rows,ready_only=True)) if telegram_composer else False
         def inspect_evidence() -> tuple[bool,bool,bool,bool]:
             field_evidence=False; visible_evidence=False; focused_now=False
             rows=self._elements(title,limit=360,handle=handle)
@@ -805,8 +846,12 @@ class DesktopOperator:
 
     def _telegram_result_score(self, element: dict[str, Any], recipient: str) -> float | None:
         """Score only a real Telegram search-result row, never a name chip/label."""
-        rec_n=self._norm(recipient); typ=self._norm(element.get("control_type")); cls=self._norm(element.get("class_name")); name=self._norm(element.get("name")); rect=element.get("rectangle") or []
-        if not element.get("visible",True) or not element.get("enabled",True) or len(rect)!=4 or not rec_n or rec_n not in name:
+        rec_n=self._norm(recipient); aliases=self._telegram_recipient_aliases(recipient); typ=self._norm(element.get("control_type")); cls=self._norm(element.get("class_name")); name=self._norm(element.get("name")); rect=element.get("rectangle") or []
+        # Telegram result rows begin with the visible display name/username.  A loose
+        # substring match used to select channels whose description merely contained a
+        # short dictated name (for example, ``теме`` inside ``в теме``).
+        matched=next((alias for alias in aliases if alias and name.startswith(alias)),"")
+        if not element.get("visible",True) or not element.get("enabled",True) or len(rect)!=4 or not matched:
             return None
         modern_row=typ=="button" and "listitem button" in cls
         legacy_row=typ in {"hyperlink","listitem"} and "chatlist" in cls
@@ -814,14 +859,21 @@ class DesktopOperator:
         width=max(0,int(rect[2])-int(rect[0])); height=max(0,int(rect[3])-int(rect[1]))
         if modern_row and (width<420 or height<70): return None
         score=8.0 if modern_row else 6.0
-        if name==rec_n: score+=4.0
-        if name.startswith(rec_n+" "): score+=2.5
-        if name.startswith(rec_n+" "+rec_n+" "): score+=1.5
-        if name.startswith("@") and rec_n in name: score+=2.0
+        if name==matched: score+=4.0
+        if name.startswith(matched+" "): score+=2.5
+        if name.startswith(matched+" "+matched+" "): score+=1.5
+        if name.startswith("@") and matched in name: score+=2.0
         if any(marker in name or marker in cls for marker in ("subscribers","subscriber","channel","members","member","участник","подписчик")): score-=5.0
         if int(rect[0])<800: score+=1.0
         score += max(0.0,1.4-max(0,int(rect[1])-420)/900.0)
         return score
+
+    @classmethod
+    def _telegram_recipient_aliases(cls, recipient: str) -> list[str]:
+        rec = cls._norm(recipient)
+        if rec in {"избранное", "избранном", "saved messages", "сохраненные сообщения", "сохраненные"}:
+            return ["saved messages", "избранное", "сохраненные сообщения"]
+        return [rec] if rec else []
 
     def _telegram_ready(self, rows: list[dict[str, Any]]) -> bool:
         """Telegram is interactive as soon as search/chat affordances are exposed.
@@ -840,7 +892,7 @@ class DesktopOperator:
         return False
 
     def _telegram_chat_evidence(self, rows: list[dict[str, Any]], recipient: str, selected_username: str = "") -> tuple[bool, dict[str, bool]]:
-        rec_n=self._norm(recipient); address_match=False; header_match=False; active_match=False; composer=False
+        aliases=self._telegram_recipient_aliases(recipient); address_match=False; header_match=False; active_match=False; composer=False
         for e in rows:
             if not e.get("visible", True):
                 continue
@@ -848,9 +900,9 @@ class DesktopOperator:
             raw=str(e.get("name") or "")
             if selected_username and ("omnibox" in cls or "адресная строка" in name) and selected_username.casefold() in raw.casefold():
                 address_match=True
-            if "chatlist" in cls and "active" in cls and rec_n and rec_n in name:
+            if "chatlist" in cls and "active" in cls and any(alias in name for alias in aliases):
                 active_match=True
-            if len(rect)==4 and int(rect[0])>=760 and 150<=int(rect[1])<=390 and rec_n and rec_n in name:
+            if len(rect)==4 and int(rect[0])>=760 and 150<=int(rect[1])<=390 and any(alias in name for alias in aliases):
                 header_match=True
             if aid in {"editable-message-text","input-message-input"} or any(x in name for x in ("write a message","сообщение")):
                 composer=True
@@ -888,7 +940,8 @@ class DesktopOperator:
             trigger_aliases=["Search","Поиск"],max_scrolls=0,visual_fallback=False,
         )
         if not search.get("ok"): raise RuntimeError("Telegram открылся, но поле поиска ещё не готово")
-        typed=self.type_verified(search,recipient,submit=False,require_verified=False)
+        search_text = "Saved Messages" if "saved messages" in self._telegram_recipient_aliases(recipient) else recipient
+        typed=self.type_verified(search,search_text,submit=False,require_verified=False)
         if not typed.get("typed"):
             raise RuntimeError("Поле поиска Telegram найдено, но ввести имя не получилось")
         time.sleep(.18)
@@ -991,9 +1044,10 @@ class DesktopOperator:
         )
         if not search.get("ok"):
             raise RuntimeError("Telegram открыт, но поле поиска не найдено")
-        typed = self.type_verified(search, recipient, submit=False, require_verified=True)
-        if not typed.get("ok"):
-            raise RuntimeError("Имя получателя не подтвердилось в поиске Telegram")
+        search_text = "Saved Messages" if "saved messages" in self._telegram_recipient_aliases(recipient) else recipient
+        typed = self.type_verified(search, search_text, submit=False, require_verified=False)
+        if not typed.get("typed"):
+            raise RuntimeError("Не удалось ввести имя получателя в поиск Telegram")
         time.sleep(.18)
         selected = None; rows = []; end = time.monotonic() + 6.0
         while time.monotonic() < end and selected is None:
@@ -1021,7 +1075,9 @@ class DesktopOperator:
             for el in self._elements(title, limit=460, handle=handle):
                 if not el.get("visible", True) or not el.get("enabled", True):
                     continue
-                if self._norm(el.get("control_type")) not in {"button", "hyperlink", "listitem", "menuitem"}:
+                if self._is_browser_chrome(el):
+                    continue
+                if self._norm(el.get("control_type")) not in {"button", "hyperlink", "listitem", "menuitem", "group"}:
                     continue
                 blob = self._norm(f"{el.get('name','')} {el.get('automation_id','')} {el.get('class_name','')}")
                 score = sum(1 for marker in markers if marker in blob)
@@ -1276,6 +1332,73 @@ class DesktopOperator:
             raise RuntimeError(str(result.get("error") or "Текст в поиске не подтверждён"))
         self._trace("OPERATOR_PAGE_SEARCH",title=acquired.get("title"),text=text[:120],submit=submit,scrolls=acquired.get("scrolls",0),method="grounded")
         return {**result,"scrolls":acquired.get("scrolls",0),"method":"grounded"}
+
+    def yandex_play_query(self, query: str) -> dict[str, Any]:
+        """Search a named Yandex Music item and commit one grounded Play action."""
+        query = str(query or "").strip().strip("«»\"'")
+        if not query:
+            raise RuntimeError("Не указано название трека")
+        window = self.wait_window(["Яндекс Музыка", "Yandex Music", "music.yandex"], .4)
+        if not window:
+            skills = getattr(self.services, "app_skills", None)
+            opened = dict(skills.open("Яндекс Музыка") or {}) if skills is not None else {}
+            window = dict(opened.get("window") or {}) or self.wait_window(["Яндекс Музыка", "Yandex Music", "music.yandex"], 5.0)
+        if not window:
+            raise RuntimeError("Яндекс Музыка не открылась")
+        handle = int(window.get("handle") or 0) or None
+        title = str(window.get("title") or "Яндекс Музыка")
+        if handle:
+            self.tools.execute("window_focus", {"handle": handle})
+        self.current_page_search(query, submit=True, max_scrolls=0)
+        deadline = time.monotonic() + 4.5
+        rows: list[dict[str, Any]] = []
+        target = None
+        while time.monotonic() < deadline and target is None:
+            rows = self._elements(title, limit=520, handle=handle)
+            target = self.resolve_element(
+                title, [query], handle=handle,
+                roles=("Hyperlink", "Button", "ListItem", "Group"),
+                purpose="activate", content_only=True, rows=rows,
+            )
+            if target is None:
+                time.sleep(.16)
+        if target is None:
+            raise RuntimeError(f"В результатах не нашла «{query}»")
+        target_rect = target.get("rectangle") or []
+        play_candidates: list[tuple[float, dict[str, Any]]] = []
+        for element in rows:
+            if self._norm(element.get("control_type")) != "button" or not element.get("visible", True) or not element.get("enabled", True):
+                continue
+            blob = self._norm(f"{element.get('name','')} {element.get('automation_id','')} {element.get('class_name','')}")
+            if not re.search(r"\b(?:play|воспроизвести|слушать|играть)\b", blob, re.I):
+                continue
+            rect = element.get("rectangle") or []
+            if len(rect) != 4:
+                continue
+            distance = 9999.0
+            if len(target_rect) == 4:
+                ty = (int(target_rect[1]) + int(target_rect[3])) / 2
+                ey = (int(rect[1]) + int(rect[3])) / 2
+                distance = abs(ty - ey)
+                if distance > 130:
+                    continue
+            play_candidates.append((distance, element))
+        commit_target = min(play_candidates, key=lambda item: item[0])[1] if play_candidates else target
+        before = list(rows)
+        if not self.click_element(title, commit_target, goal=f"yandex_play_named:{query}"):
+            raise RuntimeError("Результат нашла, но запустить его не получилось")
+        state = self.wait_for_state(handle=handle, title=title, before_rows=before, timeout=3.2, stable_for=.2, expected=[query])
+        after = list(state.get("rows") or self._elements(title, limit=420, handle=handle))
+        playing = any(
+            self._norm(element.get("control_type")) == "button"
+            and re.search(r"\b(?:pause|пауза|приостановить)\b", self._norm(f"{element.get('name','')} {element.get('class_name','')}"), re.I)
+            for element in after if element.get("visible", True)
+        )
+        verified = bool(playing or state.get("changed"))
+        self._trace("OPERATOR_VERIFY", app="yandex_music", action="play_named", query=query,
+                    verified=verified, playing=playing, matched=str(target.get("name") or ""))
+        return {"ok": True, "completed": True, "verified": verified, "playing": playing,
+                "query": query, "matched": str(target.get("name") or ""), "method": "search+semantic-play"}
 
     def telegram_thread_context(self, limit: int = 18) -> dict[str, Any]:
         """Read visible active Telegram chat messages and separate likely owner/peer sides."""

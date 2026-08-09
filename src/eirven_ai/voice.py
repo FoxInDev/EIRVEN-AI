@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import io
 import tempfile
 import threading
 import time
@@ -41,6 +43,7 @@ class VoiceService:
         self._tts_worker = TTSWorkerClient(settings.root_dir)
         self._stt_ready = threading.Event()
         self._tts_ready = threading.Event()
+        self._tts_cache_lock = threading.RLock()
         # r22: ASR remains the only hard prerequisite for *listening*, but the selected
         # local TTS weights are loaded silently immediately after ASR becomes ready.  This
         # is a model load only (no dummy speech is synthesized or played).  Live traces
@@ -60,6 +63,11 @@ class VoiceService:
             # Give the Russian ASR model first access to CPU/RAM. r14 started STT, TTS,
             # self-test and LLM warm-up together; the first utterance then waited >12 s.
             self._stt_worker.warmup(timeout=180)
+            # Loading weights is not enough for ONNX/GigaAM: the first actual graph run
+            # in the attached trace still took 21.1 seconds. Pay that cost on a harmless
+            # silent WAV before the microphone is considered interactive.
+            self._stt_worker.transcribe_bytes(self._probe_wav(), ".wav", timeout=90)
+            self._voice_runtime["stt_inference_primed"] = True
         except Exception as exc:
             self._voice_runtime["stt_prewarm_error"] = str(exc)[:300]
         finally:
@@ -73,22 +81,62 @@ class VoiceService:
         return self._tts_ready.is_set()
 
     def interactive_ready(self) -> bool:
-        """Voice turns require ASR readiness; TTS preloads independently in parallel."""
-        return self._stt_ready.is_set()
+        """True after both real inference paths, not merely model loading, are primed."""
+        return self._stt_ready.is_set() and self._tts_ready.is_set()
+
+    def wait_until_ready(self, timeout: float = 180.0) -> bool:
+        end = time.monotonic() + max(0.0, float(timeout))
+        if not self._stt_ready.wait(max(0.0, end - time.monotonic())):
+            return False
+        return self._tts_ready.wait(max(0.0, end - time.monotonic()))
+
+    @staticmethod
+    def _probe_wav(seconds: float = 0.42, sample_rate: int = 16_000) -> bytes:
+        out = io.BytesIO()
+        with wave.open(out, "wb") as wav:
+            wav.setnchannels(1)
+            wav.setsampwidth(2)
+            wav.setframerate(sample_rate)
+            wav.writeframes(b"\x00\x00" * max(1, int(seconds * sample_rate)))
+        return out.getvalue()
 
     def _prewarm_tts(self) -> None:
-        """Silently load the configured local TTS weights during startup.
-
-        No dummy phrase is synthesized. ASR and TTS may cold-load together, while the much
-        heavier action model waits for both. This trades a little startup contention for a
-        substantially lower first-reply latency in the observed real-world launch pattern.
-        """
+        """Load the selected local TTS and prime two cached operational phrases."""
         errors: list[str] = []
         try:
             engine = (self.settings.tts_engine or "auto").lower()
             identity = self.identity.get() if self.identity else None
             selected_key = str(getattr(identity, "voice_key", "") or "")
             preset = VOICE_CATALOG.get(selected_key, {})
+            reference = str(preset.get("reference") or "").strip()
+            reference_path = (self.settings.root_dir / reference).resolve() if reference else None
+            # On CPU, Piper is the conversational lane: the owner's trace showed Silero
+            # spending 10-16 seconds on every short sentence. Keep an available expressive
+            # CUDA voice, but otherwise prime the selected sub-second local voice first.
+            if engine in {"auto", "natural", "piper_onnx"} and not (
+                engine in {"auto", "natural"} and self._module_exists("chatterbox") and self._cuda_available()
+            ):
+                try:
+                    _key, selected_path = self._resolve_voice(selected_key)
+                    if self._valid_piper_model(selected_path):
+                        self._tts_worker.preload(str(selected_path), engine="piper_onnx", timeout=30)
+                        self._voice_runtime["prewarmed_tts_engine"] = "piper_onnx:selected-low-latency"
+                        return
+                except Exception as exc:
+                    errors.append(f"Selected Piper: {exc}")
+            if (
+                engine in {"auto", "natural", "chatterbox_mtl"}
+                and self._module_exists("chatterbox") and self._cuda_available()
+            ):
+                try:
+                    self._tts_worker.preload("", engine="chatterbox_mtl", timeout=180)
+                    self._voice_runtime["prewarmed_tts_engine"] = (
+                        "chatterbox_mtl:reference" if reference_path and reference_path.is_file()
+                        else "chatterbox_mtl"
+                    )
+                    return
+                except Exception as exc:
+                    errors.append(f"Chatterbox: {exc}")
             # Edge-backed catalog voices have a distinct local Piper counterpart. Warm
             # that exact counterpart, not a generic Silero speaker, so an offline/network
             # fallback preserves the voice the owner actually chose.
@@ -138,6 +186,15 @@ class VoiceService:
             except Exception as exc:
                 errors.append(f"Piper: {exc}")
         finally:
+            # Preload only deserializes weights for several engines. Generate the two
+            # latency-critical phrases now so kernels, phonemisation and the disk cache
+            # are all hot before the first owner turn.
+            try:
+                self.synthesize("Привет, бро. Я на связи. Что делаем?", mode="warm")
+                self.synthesize("Остановила.", mode="calm")
+                self._voice_runtime["tts_inference_primed"] = True
+            except Exception as exc:
+                errors.append(f"TTS inference probe: {exc}")
             if errors:
                 self._voice_runtime["tts_prewarm_error"] = " | ".join(errors)[:500]
             self._tts_ready.set()
@@ -316,10 +373,12 @@ class VoiceService:
     @staticmethod
     def _prepare_text(text: str, mode: str) -> str:
         clean = " ".join(text.strip().split())
-        if mode == "energetic":
+        if mode in {"energetic", "amused", "proud"}:
             clean = clean.replace("…", ".").replace("...", ".")
         if mode == "strict":
             clean = clean.replace("!", ".")
+        if mode in {"sad", "empathetic", "tired"}:
+            clean = clean.replace(";", ",").replace(" — ", ", ")
         return clean
 
     @staticmethod
@@ -331,6 +390,13 @@ class VoiceService:
             "quiet": "Speak quietly and intimately in Russian, with restrained emotion.",
             "energetic": "Speak energetic confident Russian, lively but not theatrical.",
             "strict": "Speak concise serious Russian with controlled firm intonation.",
+            "amused": "Speak natural Russian with an audible subtle smile and playful timing; never overact.",
+            "sad": "Speak softly in Russian with subdued, sincere sadness and slower pauses.",
+            "empathetic": "Speak supportive, attentive Russian with warmth, gentle pauses and no artificial cheerfulness.",
+            "curious": "Speak curious conversational Russian with light questioning intonation.",
+            "concerned": "Speak focused, caring Russian with restrained concern and clear diction.",
+            "proud": "Speak warm confident Russian with quiet pride and a subtle smile.",
+            "tired": "Speak slightly tired, soft Russian with unhurried natural pauses.",
         }
         return mapping.get(mode, mapping["natural"])
 
@@ -366,6 +432,13 @@ class VoiceService:
             "quiet": 0.94,
             "energetic": 1.05,
             "strict": 1.00,
+            "amused": 1.04,
+            "sad": 0.89,
+            "empathetic": 0.92,
+            "curious": 0.99,
+            "concerned": 0.94,
+            "proud": 1.00,
+            "tired": 0.88,
         }.get(mode, 0.98)
         clean = str(text or "").strip()
         words = len(clean.split())
@@ -414,6 +487,17 @@ class VoiceService:
         output_dir = self.settings.data_dir / "audio"
         output_dir.mkdir(parents=True, exist_ok=True)
         output = output_dir / f"reply-{datetime.now().strftime('%Y%m%d-%H%M%S-%f')}.wav"
+        cache_dir = output_dir / "cache-v2"
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        cache_payload = "|".join((
+            str(self.settings.tts_engine or "auto"), str(requested_voice or "default"),
+            selected_mode, prepared,
+        ))
+        cache_path = cache_dir / (hashlib.sha256(cache_payload.encode("utf-8")).hexdigest()[:32] + ".wav")
+        with self._tts_cache_lock:
+            if cache_path.is_file() and cache_path.stat().st_size >= 44:
+                self._voice_runtime["last_tts_engine"] = "audio_cache"
+                return str(cache_path)
         errors: list[str] = []
         data: bytes | None = None
 
@@ -424,7 +508,12 @@ class VoiceService:
         # choices into one default voice.
         engine = (self.settings.tts_engine or "auto").lower()
         preferred_engine = str(voice_preset.get("preferred_engine") or "").lower()
-        profile["exaggeration"] = {"natural": .5, "warm": .62, "calm": .42, "energetic": .72, "strict": .38, "quiet": .35}.get(selected_mode, .5)
+        profile["exaggeration"] = {
+            "natural": .50, "warm": .60, "calm": .40, "energetic": .76,
+            "strict": .35, "quiet": .32, "amused": .82, "sad": .46,
+            "empathetic": .58, "curious": .67, "concerned": .54,
+            "proud": .68, "tired": .37,
+        }.get(selected_mode, .5)
         profile["cfg_weight"] = .5
         profile["mode"] = selected_mode
         reference = str(voice_preset.get("reference") or "").strip()
@@ -434,10 +523,25 @@ class VoiceService:
 
         edge_cooldown = float(self._voice_runtime.get("edge_disabled_until") or 0)
 
-        # Stable order: requested neural voice (quick network attempt) -> local Silero ->
-        # verified Piper -> optional network fallback. Windows SAPI is NEVER an automatic
-        # fallback: it was the reason the user's selected voices suddenly sounded like the
-        # system narrator and could take tens of seconds for a short phrase.
+        # On capable CUDA hardware the local cloned voice is the most expressive route.
+        # A reference is preferred, but Chatterbox's validated default Russian voice is still
+        # more prosodic than the low-latency monotone fallback.
+        if (
+            data is None
+            and engine in {"auto", "natural", "chatterbox_mtl"}
+            and self._module_exists("chatterbox") and self._cuda_available()
+        ):
+            try:
+                data = self._tts_worker.synthesize(
+                    prepared, "", profile, engine="chatterbox_mtl", timeout=18
+                )
+                self._voice_runtime["last_tts_engine"] = "chatterbox_mtl"
+            except (TTSWorkerError, VoiceError, OSError) as exc:
+                errors.append(f"Chatterbox RU: {exc}")
+
+        # Stable order after the expressive local route: emotion-capable Edge neural voice
+        # -> selected local Piper with per-mode prosody -> Silero safety net. Windows SAPI is
+        # never an automatic fallback.
         if (
             data is None and preferred_engine == "edge_tts"
             and engine in {"auto", "natural", "edge_tts", "chatterbox_mtl", "silero"}
@@ -453,17 +557,6 @@ class VoiceService:
                 self._voice_runtime["edge_disabled_until"] = time.monotonic() + 120.0
                 errors.append(f"Edge neural RU: {exc}")
 
-        if (
-            data is None and profile.get("audio_prompt_path")
-            and engine in {"auto", "natural", "chatterbox_mtl"}
-            and self._module_exists("chatterbox") and self._cuda_available()
-        ):
-            try:
-                data = self._tts_worker.synthesize(prepared, "", profile, engine="chatterbox_mtl", timeout=12)
-                self._voice_runtime["last_tts_engine"] = "chatterbox_mtl"
-            except (TTSWorkerError, VoiceError, OSError) as exc:
-                errors.append(f"Chatterbox RU: {exc}")
-
         # Preserve identity for Edge-backed voices when network speech is unavailable:
         # use that catalog voice's own local Piper model before a generic Silero speaker.
         if data is None and preferred_engine == "edge_tts" and engine in {"auto", "natural", "edge_tts", "chatterbox_mtl", "silero"}:
@@ -475,6 +568,20 @@ class VoiceService:
                 self._voice_runtime["last_tts_engine"] = "piper_onnx_selected_fallback"
             except (TTSWorkerError, VoiceError) as exc:
                 errors.append(f"Selected Piper-ONNX: {exc}")
+
+        # For non-Edge catalog voices, local Piper is dramatically faster on the Windows
+        # CPU profile from the logs. Emotion still changes prosody through the per-mode
+        # length/noise profile; Silero remains a quality fallback rather than the default
+        # 10-16 second conversational path.
+        if data is None and preferred_engine != "edge_tts" and engine in {"auto", "natural", "chatterbox_mtl", "edge_tts", "piper_onnx"}:
+            try:
+                _key, voice_path = self._resolve_voice(requested_voice)
+                data = self._tts_worker.synthesize(
+                    prepared, str(voice_path), profile, engine="piper_onnx", timeout=4.0,
+                )
+                self._voice_runtime["last_tts_engine"] = "piper_onnx_low_latency"
+            except (TTSWorkerError, VoiceError) as exc:
+                errors.append(f"Piper-ONNX fast lane: {exc}")
 
         if data is None and engine in {"auto", "natural", "silero", "chatterbox_mtl", "edge_tts"} and self.settings.silero_model:
             try:
@@ -555,5 +662,9 @@ class VoiceService:
             raise VoiceError("Локальный TTS не создал аудио")
         # Keep breath subtle; the speech engine should carry the prosody itself.
         self._postprocess_wav(output, float(profile["volume"]))
-        return str(output)
-
+        with self._tts_cache_lock:
+            if cache_path.is_file() and cache_path.stat().st_size >= 44:
+                output.unlink(missing_ok=True)
+            else:
+                output.replace(cache_path)
+        return str(cache_path)

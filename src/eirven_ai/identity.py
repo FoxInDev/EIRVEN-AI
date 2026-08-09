@@ -21,6 +21,13 @@ VOICE_MODES: dict[str, dict[str, Any]] = {
     "energetic": {"title": "Энергично", "length_scale": 0.82, "noise_scale": 0.74, "noise_w": 0.88, "volume": 1.03, "breath": 0.0},
     "strict": {"title": "Серьёзно", "length_scale": 0.88, "noise_scale": 0.53, "noise_w": 0.68, "volume": 1.0, "breath": 0.0},
     "quiet": {"title": "Тихо", "length_scale": 0.95, "noise_scale": 0.62, "noise_w": 0.76, "volume": 0.72, "breath": 0.025},
+    "amused": {"title": "С улыбкой", "length_scale": 0.84, "noise_scale": 0.76, "noise_w": 0.90, "volume": 1.01, "breath": 0.0},
+    "sad": {"title": "Грустно", "length_scale": 1.03, "noise_scale": 0.58, "noise_w": 0.72, "volume": 0.86, "breath": 0.05},
+    "empathetic": {"title": "С поддержкой", "length_scale": 0.98, "noise_scale": 0.66, "noise_w": 0.78, "volume": 0.94, "breath": 0.04},
+    "curious": {"title": "С любопытством", "length_scale": 0.89, "noise_scale": 0.72, "noise_w": 0.85, "volume": 0.98, "breath": 0.0},
+    "concerned": {"title": "Обеспокоенно", "length_scale": 0.94, "noise_scale": 0.60, "noise_w": 0.72, "volume": 0.97, "breath": 0.02},
+    "proud": {"title": "Гордо", "length_scale": 0.87, "noise_scale": 0.69, "noise_w": 0.83, "volume": 1.01, "breath": 0.0},
+    "tired": {"title": "Устало", "length_scale": 1.04, "noise_scale": 0.56, "noise_w": 0.70, "volume": 0.82, "breath": 0.06},
 }
 
 # Voice presets map one UI choice to natural neural, local Silero and Piper fallbacks.
@@ -28,7 +35,10 @@ VOICE_MODES: dict[str, dict[str, Any]] = {
 VOICE_CATALOG: dict[str, dict[str, Any]] = {
     "irina_soft": {
         "title": "Бая · фирменный голос Эйрвен",
-        "gender": "female", "preferred_engine": "silero",
+        # Expressive local Chatterbox is used on CUDA.  Edge neural speech and the
+        # emotion-aware local Piper voice are the CPU/offline fallbacks; monotone Silero
+        # remains the final low-latency safety net.
+        "gender": "female", "preferred_engine": "edge_tts",
         "silero_speaker": "baya", "edge_voice": "ru-RU-SvetlanaNeural",
         "reference": "models/voice_refs/baya.wav", "model": "ru_RU-irina-medium.onnx",
     },
@@ -128,13 +138,25 @@ class IdentityService:
 
     @staticmethod
     def infer_emotion(text: str) -> str:
-        clean = text.lower()
-        if any(word in clean for word in ("ура", "круто", "отлично", "супер", "победа", "готово!", "кайф")):
+        clean = str(text or "").casefold().replace("ё", "е")
+        if any(word in clean for word in ("ахаха", "ахах", "хаха", "ха-ха", "смешно", "шутк", "ору с", "лол")):
+            return "amused"
+        if any(word in clean for word in ("ура", "круто", "отлично", "супер", "победа", "готово!", "кайф", "получилось")):
             return "energetic"
-        if any(word in clean for word in ("груст", "тяжело", "боюсь", "тревог", "поддерж", "устал")):
-            return "warm"
-        if any(word in clean for word in ("внимание", "ошибка", "опас", "важно", "останов", "срочно")):
+        if any(word in clean for word in ("груст", "печаль", "плохо на душе", "хочется плак", "расстро", "одиноко", "больно")):
+            return "sad"
+        if any(word in clean for word in ("устал", "нет сил", "выжат", "сонн", "не выспал")):
+            return "tired"
+        if any(word in clean for word in ("держись", "я рядом", "понимаю тебя", "поддерж", "не переживай")):
+            return "empathetic"
+        if any(word in clean for word in ("боюсь", "тревог", "пережива", "опас", "осторож", "срочно", "что-то не так")):
+            return "concerned"
+        if any(word in clean for word in ("внимание", "ошибка", "важно", "останов", "критическ")):
             return "strict"
         if any(word in clean for word in ("спокойно", "не спеши", "отдохни", "тише")):
             return "calm"
+        if any(word in clean for word in ("интересно", "любопытно", "а что если", "давай проверим", "хм,")):
+            return "curious"
+        if any(word in clean for word in ("горжусь", "молодец", "классно справил", "вот это результат")):
+            return "proud"
         return "natural"

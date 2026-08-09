@@ -14,6 +14,7 @@ from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any
 
+from .affect import analyze_speech_affect
 from .trace import log_event
 
 
@@ -57,6 +58,10 @@ class NativeVoiceDaemon:
         self._last_error = ""
         self._last_text = ""
         self._last_emotion = "natural"
+        self._last_affect: dict[str, Any] = {}
+        self._last_response_emotion = "natural"
+        self._speaking_emotion = ""
+        self._emotion_changed_at = 0.0
         self._noise_floor = 0.0045
         self._input_level = 0.0
         self._input_device = ""
@@ -115,6 +120,12 @@ class NativeVoiceDaemon:
             if self._state == "armed":
                 self._state = "listening"
         visible_state = "onboarding" if not onboarding_complete else self._state
+        mood = {}
+        try:
+            cognition = getattr(self.services, "cognition", None)
+            mood = cognition.mood() if cognition is not None else {}
+        except Exception:
+            mood = {}
         return {
             "running": bool(self._thread and self._thread.is_alive()),
             "state": visible_state,
@@ -126,6 +137,11 @@ class NativeVoiceDaemon:
             "onboarding_complete": onboarding_complete,
             "last_text": self._last_text,
             "last_emotion": self._last_emotion,
+            "last_affect": dict(self._last_affect),
+            "response_emotion": self._last_response_emotion,
+            "mood": mood,
+            "speaking_emotion": self._speaking_emotion,
+            "emotion_age_seconds": round(max(0.0, time.monotonic() - self._emotion_changed_at), 2) if self._emotion_changed_at else None,
             "noise_floor": round(self._noise_floor, 5),
             "input_level": round(self._input_level, 4),
             "input_device": self._input_device,
@@ -535,6 +551,65 @@ class NativeVoiceDaemon:
             "command": tail if has_wake and tail else self._normalize(text),
         }
 
+    def _is_emergency_cancel(self, text: str) -> bool:
+        """Emergency cancellation deliberately bypasses the wake-name contract."""
+        clean = self._strip_leading_wakes(text)
+        clean = re.sub(r"^(?:первая|прямая)\s+(?=отмена$)", "", clean).strip()
+        return bool(re.fullmatch(
+            r"(?:стоп|отмена|отменить|отмени|остановись|останови|остановить|прекрати|хватит|"
+            r"отмена\s+(?:задачи|всего)|отмени\s+(?:задачу|все|всё)|"
+            r"останови\s+(?:задачу|все|всё))",
+            clean,
+        ))
+
+    def emergency_cancel(self, heard_text: str = "") -> dict[str, int]:
+        """Stop speech, generation, GUI work and persistent missions as one operation."""
+        self._barge_in.set()
+        self._next_turn()
+        self._active_until = 0.0
+        self._session_activated = False
+        try:
+            if self._conversation_id:
+                self.services.chat.stop(self._conversation_id)
+        except Exception:
+            pass
+        cancelled = 0
+        try:
+            runtime = getattr(self.services, "runtime", None)
+            result = runtime.stop_all() if runtime is not None else {"cancelled": 0}
+            cancelled = int(result.get("cancelled") or 0)
+        except Exception:
+            pass
+        for workflow_name in ("universal_workflow", "autonomous_workflow"):
+            workflow = getattr(self.services, workflow_name, None)
+            try:
+                if workflow is not None and self._conversation_id:
+                    workflow._clear_pending(self._conversation_id)
+            except Exception:
+                pass
+        for target in (self._utterance_q, self._audio_q):
+            try:
+                while True:
+                    target.get_nowait()
+            except queue.Empty:
+                pass
+        try:
+            runtime = getattr(self.services, "runtime", None)
+            if runtime is not None:
+                runtime.voice_activity_resolved(accepted=True)
+        except Exception:
+            pass
+        self._generation_active.clear()
+        self._state = "listening"
+        log_event(
+            self.services.settings.root_dir, "VOICE_EMERGENCY_CANCEL",
+            text=str(heard_text or "")[:180], cancelled=cancelled,
+        )
+        # This phrase is synthesized into the startup cache, so acknowledgement is not
+        # held behind the task which has just been cancelled.
+        self.say("Остановила.", emotion="calm")
+        return {"cancelled": cancelled}
+
     def _is_activation_phrase(self, text: str) -> bool:
         """Require a greeting only for the first wake of a conversation window."""
         normalized = self._normalize(text)
@@ -545,17 +620,24 @@ class NativeVoiceDaemon:
         # Common ASR punctuation/spacing variants of a greeting plus the configured name.
         return bool(re.search(r"\bпривет\w{0,4}\b", normalized))
 
-    def _emotion(self, text: str, duration: float, energy: float) -> str:
-        words = max(1, len(text.split()))
-        pace = words / max(0.35, duration)
+    def _emotion(self, text: str, duration: float, energy: float, wav_bytes: bytes = b"") -> str:
         textual = self.services.identity.infer_emotion(text)
-        if textual != "natural":
-            return textual
-        if pace >= 3.8 or energy >= max(0.04, self._noise_floor * 5.0):
-            return "energetic"
-        if energy < max(0.011, self._noise_floor * 2.1):
-            return "quiet"
-        return "natural"
+        affect = analyze_speech_affect(
+            text,
+            duration=duration,
+            energy=energy,
+            noise_floor=self._noise_floor,
+            wav_bytes=wav_bytes,
+            textual_emotion=textual,
+        )
+        self._last_affect = affect.to_dict()
+        try:
+            cognition = getattr(self.services, "cognition", None)
+            if cognition is not None:
+                cognition.update_mood(affect.emotion, float(affect.confidence))
+        except Exception:
+            pass
+        return affect.emotion
 
     def _response_emotion(self, text: str, user_emotion: str) -> str:
         try:
@@ -568,8 +650,16 @@ class NativeVoiceDaemon:
             inferred = self.services.identity.infer_emotion(text)
             if inferred != "natural":
                 return inferred
+            if user_emotion == "sad":
+                return "empathetic"
+            if user_emotion == "tired":
+                return "warm"
+            if user_emotion == "concerned":
+                return "calm"
+            if user_emotion == "amused":
+                return "amused"
             if commentary == "playful":
-                return "energetic"
+                return "amused"
             style = self.services.style.get()
             style_humor = str(getattr(style, "humor", "") or "").casefold()
             if commentary == "adaptive" and any(mark in style_humor for mark in ("игрив", "живой", "юмор")) and "без юмора" not in style_humor:
@@ -578,7 +668,10 @@ class NativeVoiceDaemon:
                 return "warm"
         except Exception:
             pass
-        return user_emotion if user_emotion in {"energetic", "quiet", "warm", "calm", "strict"} else "natural"
+        return user_emotion if user_emotion in {
+            "energetic", "quiet", "warm", "calm", "strict", "amused", "sad",
+            "empathetic", "curious", "concerned", "proud", "tired",
+        } else "natural"
 
     def reset_pipeline(self) -> None:
         """Drop stale speech/model work while keeping the microphone service alive."""
@@ -646,13 +739,18 @@ class NativeVoiceDaemon:
                 ready = getattr(self.services.voice, "interactive_ready", None)
                 if callable(ready) and not ready():
                     self._state = "warming"
-                    log_event(self.services.settings.root_dir, "VOICE_DROP_WARMING", duration=round(duration, 3), energy=round(energy, 6))
-                    try:
-                        runtime = getattr(self.services, "runtime", None)
-                        if runtime is not None: runtime.voice_activity_resolved(accepted=False)
-                    except Exception:
-                        pass
-                    continue
+                    warm_started = time.monotonic()
+                    log_event(self.services.settings.root_dir, "VOICE_QUEUE_WARMING", duration=round(duration, 3), energy=round(energy, 6))
+                    waiter = getattr(self.services.voice, "wait_until_ready", None)
+                    if not callable(waiter) or not waiter(180.0):
+                        try:
+                            runtime = getattr(self.services, "runtime", None)
+                            if runtime is not None: runtime.voice_activity_resolved(accepted=False)
+                        except Exception:
+                            pass
+                        self._state = "listening"
+                        continue
+                    log_event(self.services.settings.root_dir, "VOICE_WARM_READY", wait_ms=round((time.monotonic()-warm_started)*1000))
                 self._state = "recognizing"
                 asr_started = time.monotonic()
                 text = self.services.voice.transcribe_bytes(wav, ".wav").strip()
@@ -676,6 +774,9 @@ class NativeVoiceDaemon:
                         except Exception: pass
                     continue
                 self._last_text = text
+                if self._is_emergency_cancel(text):
+                    self.emergency_cancel(text)
+                    continue
                 now = time.monotonic()
                 route = self._activation_route(text, speech_started_at, now)
                 has_wake = bool(route.get("has_wake"))
@@ -732,9 +833,10 @@ class NativeVoiceDaemon:
                 # generation and any currently playing/queued stale TTS.
                 self._barge_in.set()
                 tail = command_text
-                emotion = self._emotion(text, duration, energy)
+                emotion = self._emotion(text, duration, energy, wav)
                 self._last_emotion = emotion
                 self.services.db.set_setting("last_voice_emotion", emotion)
+                self.services.db.set_setting("last_voice_affect", dict(self._last_affect))
                 if self._conversation_id:
                     try:
                         self.services.chat.stop(self._conversation_id)
@@ -1012,6 +1114,9 @@ class NativeVoiceDaemon:
                 import soundfile as sf  # type: ignore
                 import numpy as np  # type: ignore
                 mode = self._response_emotion(text, user_emotion)
+                self._last_response_emotion = mode
+                self._speaking_emotion = mode
+                self._emotion_changed_at = time.monotonic()
                 chunks = self._speech_chunks(text)
                 if not chunks:
                     return
@@ -1096,6 +1201,8 @@ class NativeVoiceDaemon:
                     pass
                 self._speaking.clear()
                 self._speaking_since = 0.0
+                self._speaking_emotion = ""
+                self._emotion_changed_at = time.monotonic()
                 self._barge_in.clear()
                 if ambient is not None and not self._stop.is_set() and time.monotonic() < self._active_until:
                     try: ambient.resume()

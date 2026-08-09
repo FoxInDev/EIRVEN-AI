@@ -141,6 +141,12 @@ class TelegramConfigRequest(BaseModel):
     phone: str
 
 
+class TelegramRemoteRequest(BaseModel):
+    enabled: bool = False
+    chats: list[str] = Field(default_factory=list)
+    prefix: str = "Эрви,"
+
+
 class TelegramLoginRequest(BaseModel):
     code: str
     password: str = ""
@@ -171,7 +177,7 @@ def _sse(data: dict[str, Any], event: str | None = None) -> bytes:
 def build_api(services: Services) -> FastAPI:
     app = FastAPI(
         title="EIRVEN AI Local API",
-        version="1.2.2",
+        version="1.4.0",
         description="Локальный voice-first персональный ИИ с очередью задач и управлением компьютером",
     )
     upload_dir = services.settings.data_dir / "uploads"
@@ -207,13 +213,13 @@ def build_api(services: Services) -> FastAPI:
     @app.get("/api/ping")
     def ping() -> dict[str, str]:
         # Lightweight startup probe: never calls Ollama, Telegram, voice or hardware.
-        return {"app": "eirven", "status": "ok", "version": "1.2.2"}
+        return {"app": "eirven", "status": "ok", "version": "1.4.0"}
 
     @app.get("/api/health")
     def health() -> dict[str, Any]:
         return {
             "app": "ok",
-            "version": "1.2.2",
+            "version": "1.4.0",
             "llm": services.gateway.health(),
             "hardware": services.hardware.to_dict(),
             "workspace": str(services.settings.workspace_dir),
@@ -768,8 +774,8 @@ def build_api(services: Services) -> FastAPI:
             "desktop_eyes_enabled": bool(services.db.get_setting("desktop_eyes_enabled", True)),
             "update_channel": str(services.db.get_setting("update_channel", "stable") or "stable"),
             "auto_update_check": bool(services.db.get_setting("auto_update_check", True)),
-            "version": "1.2.2",
-            "build": "r22.4-send-icon-favicon-hotfix",
+            "version": "1.4.0",
+            "build": "r26-cognitive-live-agent",
         }
 
     @app.get("/api/preferences")
@@ -831,8 +837,8 @@ def build_api(services: Services) -> FastAPI:
         present in the environment. Stable checks use /releases/latest; preview checks
         inspect recent published releases and may select a prerelease.
         """
-        current = "1.2.2"
-        build = "r22.4-send-icon-favicon-hotfix"
+        current = "1.4.0"
+        build = "r26-cognitive-live-agent"
         repo = str(os.getenv("EIRVEN_UPDATE_REPO", "FoxInDev/EIRVEN-AI") or "FoxInDev/EIRVEN-AI").strip().strip("/")
         if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repo):
             return {"ok": False, "current": current, "build": build, "error": "Некорректный EIRVEN_UPDATE_REPO"}
@@ -841,7 +847,7 @@ def build_api(services: Services) -> FastAPI:
         headers = {
             "Accept": "application/vnd.github+json",
             "X-GitHub-Api-Version": "2026-03-10",
-            "User-Agent": "EIRVEN-AI/1.2.2",
+            "User-Agent": "EIRVEN-AI/1.4.0",
         }
         token = str(os.getenv("GITHUB_TOKEN", "") or "").strip()
         if token:
@@ -950,6 +956,7 @@ def build_api(services: Services) -> FastAPI:
             "status": services.telegram.status(),
             "rules": services.telegram.rules(),
             "config": services.telegram.config(),
+            "remote": services.telegram.remote_config(),
         }
 
     @app.put("/api/telegram/config")
@@ -977,6 +984,13 @@ def build_api(services: Services) -> FastAPI:
     def telegram_rules(request: TelegramRulesRequest) -> dict[str, Any]:
         services.telegram.save_rules(request.rules)
         return {"rules": services.telegram.rules()}
+
+    @app.put("/api/telegram/remote")
+    def telegram_remote(request: TelegramRemoteRequest) -> dict[str, Any]:
+        try:
+            return {"remote": services.telegram.save_remote_config(request.enabled, request.chats, request.prefix)}
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @app.post("/api/telegram/start")
     def telegram_start() -> dict[str, Any]:

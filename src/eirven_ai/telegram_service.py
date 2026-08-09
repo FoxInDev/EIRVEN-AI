@@ -46,6 +46,7 @@ class TelegramMonitor:
         self._auth_thread: threading.Thread | None = None
         self._auth_client: Any = None
         self._auth_phone_code_hash: str = ""
+        self._remote_handler: Any = None
         stored = self.db.get_setting("telegram_config", {})
         if isinstance(stored, dict):
             self.settings.telegram_api_id = int(stored.get("api_id") or self.settings.telegram_api_id or 0)
@@ -118,9 +119,14 @@ class TelegramMonitor:
         await client.connect()
         self._auth_client = client
         if await client.is_user_authorized():
+            me = await client.get_me()
             await client.disconnect()
             self._auth_client = None
-            return {"authorized": True, "message": "Telegram уже авторизован"}
+            return {
+                "authorized": True, "message": "Telegram уже авторизован",
+                "user_id": str(getattr(me, "id", "") or ""),
+                "username": str(getattr(me, "username", "") or ""),
+            }
         sent = await client.send_code_request(self.settings.telegram_phone)
         self._auth_phone_code_hash = str(sent.phone_code_hash)
         return {"authorized": False, "code_sent": True, "message": "Код отправлен в Telegram"}
@@ -147,7 +153,11 @@ class TelegramMonitor:
             await self._auth_client.disconnect()
             self._auth_client = None
             self._auth_phone_code_hash = ""
-            return {"authorized": True, "message": f"Авторизация завершена: {getattr(me, 'first_name', '')}"}
+            return {
+                "authorized": True, "message": f"Авторизация завершена: {getattr(me, 'first_name', '')}",
+                "user_id": str(getattr(me, "id", "") or ""),
+                "username": str(getattr(me, "username", "") or ""),
+            }
         except Exception:
             # Keep the client alive so a corrected code/password can be submitted.
             raise
@@ -169,6 +179,37 @@ class TelegramMonitor:
     def rules(self) -> list[dict[str, Any]]:
         value = self.db.get_setting("telegram_rules", [])
         return value if isinstance(value, list) else []
+
+    def bind_remote_handler(self, handler: Any) -> None:
+        """Bind the local agent without coupling Telegram transport to ChatService."""
+        self._remote_handler = handler
+
+    def remote_config(self) -> dict[str, Any]:
+        value = self.db.get_setting("telegram_remote_control", {})
+        value = value if isinstance(value, dict) else {}
+        chats = value.get("chats") or []
+        if isinstance(chats, str):
+            chats = [part.strip() for part in chats.split(",") if part.strip()]
+        return {
+            "enabled": bool(value.get("enabled", False)),
+            "chats": [str(item).strip() for item in chats if str(item).strip()][:20],
+            "prefix": str(value.get("prefix") or "Эрви,").strip()[:40],
+        }
+
+    def save_remote_config(self, enabled: bool, chats: list[str], prefix: str = "Эрви,") -> dict[str, Any]:
+        normalized = []
+        for item in chats[:20]:
+            value = str(item).strip().lstrip("@")
+            if value and value != "*" and value.casefold() not in {x.casefold() for x in normalized}:
+                normalized.append(value)
+        prefix = str(prefix or "Эрви,").strip()[:40]
+        if enabled and not normalized:
+            raise TelegramError("Для удалённого управления укажите точный ID, username или название разрешённого чата")
+        if len(prefix) < 2:
+            raise TelegramError("Префикс команды должен быть не короче двух символов")
+        config = {"enabled": bool(enabled), "chats": normalized, "prefix": prefix}
+        self.db.set_setting("telegram_remote_control", config)
+        return config
 
     def save_rules(self, rules: list[dict[str, Any]]) -> None:
         normalized: list[dict[str, Any]] = []
@@ -198,10 +239,13 @@ class TelegramMonitor:
         if not self.settings.telegram_api_id or not self.settings.telegram_api_hash:
             raise TelegramError("Нужны Telegram API ID и API Hash")
         enabled = [rule for rule in self.rules() if rule.get("enabled")]
-        if not enabled:
-            raise TelegramError("Нет включённых правил")
+        remote = self.remote_config()
+        if not enabled and not remote.get("enabled"):
+            raise TelegramError("Нет включённых правил или удалённого управления")
         if any(not rule.get("chats") for rule in enabled):
             raise TelegramError("У каждого правила должен быть список разрешённых чатов")
+        if remote.get("enabled") and (not remote.get("chats") or self._remote_handler is None):
+            raise TelegramError("Удалённое управление не готово: проверьте разрешённые чаты")
         self._stop.clear()
         self._status = {"running": True, "message": "Подключаю Telegram…"}
         self._thread = threading.Thread(target=self._thread_main, daemon=True, name="telegram-monitor")
@@ -247,7 +291,9 @@ class TelegramMonitor:
                 "Telegram ещё не подключён. Откройте «Настройки» → «Telegram», введите данные и подтвердите вход"
             )
 
-        @client.on(events.NewMessage(incoming=True))
+        # Remote control may originate from the owner's Saved Messages and is therefore
+        # an outgoing update.  Automatic reply rules below still ignore outgoing events.
+        @client.on(events.NewMessage())
         async def on_message(event: Any) -> None:
             await self._handle_event(event)
 
@@ -280,6 +326,37 @@ class TelegramMonitor:
             or chat_id
         )
         identifiers = {chat_id.lower(), username.lower(), title.lower()}
+
+        remote = self.remote_config()
+        allowed_remote = {str(item).casefold().lstrip("@") for item in remote.get("chats") or []}
+        prefix = str(remote.get("prefix") or "Эрви,").strip()
+        remote_match = bool(
+            remote.get("enabled")
+            and allowed_remote
+            and any(identifier.casefold().lstrip("@") in allowed_remote for identifier in identifiers)
+            and text.casefold().startswith(prefix.casefold())
+        )
+        if remote_match:
+            command = text[len(prefix):].strip(" \t\r\n,:;.!?—-")
+            if not command:
+                await event.reply("Я на связи. Напиши задачу после префикса.")
+                return
+            if self._remote_handler is None:
+                await event.reply("Контур удалённого управления ещё не готов.")
+                return
+            try:
+                result = await asyncio.to_thread(self._remote_handler, command, chat_id)
+                if isinstance(result, dict):
+                    answer = str(result.get("answer") or result.get("message") or "Готово.")
+                else:
+                    answer = str(result or "Готово.")
+            except Exception as exc:
+                answer = f"План прервался: {exc}. Я сохранила контекст — уточни команду, и продолжу с другого шага."
+            await event.reply(answer.strip()[:4000])
+            return
+
+        if bool(getattr(event, "out", False)):
+            return
 
         for rule in self.rules():
             if not rule.get("enabled"):

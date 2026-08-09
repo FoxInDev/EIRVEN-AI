@@ -60,6 +60,7 @@
               <button data-settings-tab="voice">Голос</button>
               <button data-settings-tab="appearance">Внешний вид</button>
               <button data-settings-tab="privacy">Приватность</button>
+              <button data-settings-tab="telegram">Telegram</button>
               <button data-settings-tab="updates">Обновления</button>
             </nav>
             <div class="settings-panels">
@@ -106,10 +107,28 @@
                 </article>
               </section>
 
+              <section class="settings-panel" data-settings-panel="telegram">
+                <article class="settings-card settings-wide">
+                  <h3>Telegram и управление с телефона</h3>
+                  <p class="setting-copy">Подключение необязательно. Данные и session остаются на этом компьютере; удалённые команды принимаются только из точного allowlist и только с заданным префиксом.</p>
+                  <label>API ID<input id="telegram-api-id" type="number" min="1" placeholder="12345678"></label>
+                  <label>API Hash<input id="telegram-api-hash" type="password" autocomplete="off" placeholder="Вставь API Hash"></label>
+                  <label>Номер телефона<input id="telegram-phone" autocomplete="tel" placeholder="+7…"></label>
+                  <div class="update-actions"><button id="telegram-save-config" class="glass-action">Сохранить подключение</button><button id="telegram-request-code" class="glass-action">Получить код</button></div>
+                  <label>Код входа<input id="telegram-login-code" inputmode="numeric" autocomplete="one-time-code" placeholder="Код из Telegram"></label>
+                  <label>Пароль 2FA, если включён<input id="telegram-login-password" type="password" autocomplete="current-password" placeholder="Не сохраняется"></label>
+                  <button id="telegram-confirm-login" class="glass-action">Подтвердить вход</button>
+                  <div class="setting-row"><div><b>Команды с телефона</b><small>Например: «Эрви, открой VS Code» в разрешённом чате</small></div><label class="switch"><input id="telegram-remote-enabled" type="checkbox"><span></span></label></div>
+                  <label>Разрешённые чаты<input id="telegram-remote-chats" placeholder="ID или @username через запятую"></label>
+                  <label>Префикс команды<input id="telegram-remote-prefix" maxlength="40" value="Эрви,"></label>
+                  <div class="update-actions"><button id="telegram-save-remote" class="glass-action">Сохранить доступ</button><button id="telegram-monitor-start" class="glass-action">Запустить</button><button id="telegram-monitor-stop" class="glass-action danger-soft">Остановить</button><span id="telegram-status">Не подключено</span></div>
+                </article>
+              </section>
+
               <section class="settings-panel" data-settings-panel="updates">
                 <article class="settings-card settings-wide">
                   <h3>Обновления</h3>
-                  <div class="setting-row"><div><b>Версия</b><small id="version-caption">EIRVEN 1.2.2 · r22.4-send-icon-favicon-hotfix</small></div><span class="version-pill" id="version-pill">r22.4-send-icon-favicon-hotfix</span></div>
+                  <div class="setting-row"><div><b>Версия</b><small id="version-caption">EIRVEN 1.4.0 · r26-cognitive-live-agent</small></div><span class="version-pill" id="version-pill">r26-cognitive-live-agent</span></div>
                   <div class="setting-row"><div><b>Канал обновлений</b><small>Стабильные или предварительные сборки</small></div><select id="update-channel"><option value="stable">Стабильный</option><option value="preview">Предварительный</option></select></div>
                   <div class="setting-row"><div><b>Проверять автоматически</b><small>Проверка при открытии раздела обновлений</small></div><label class="switch"><input id="auto-update-check" type="checkbox"><span></span></label></div>
                   <div class="update-actions"><button id="check-updates" class="glass-action">Проверить сейчас</button><a id="download-update" class="glass-action update-download" href="#" target="_blank" rel="noopener" hidden>Скачать обновление</a><span id="update-status">Не проверялось</span></div>

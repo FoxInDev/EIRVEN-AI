@@ -1,0 +1,9 @@
+{
+  "product": "EIRVEN AI",
+  "version": "1.4.0",
+  "build": "r26-cognitive-live-agent",
+  "release_date": "2026-08-10",
+  "python": ">=3.11,<3.14",
+  "platform": "Windows 10/11",
+  "tests_included": true
+}

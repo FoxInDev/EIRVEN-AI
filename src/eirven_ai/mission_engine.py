@@ -17,7 +17,7 @@ from .trace import log_event
 class MissionNode:
     id: str
     goal: str
-    kind: str = "ui"  # ui | app | open_target | media | telegram_message | web | system | resolve_file | telegram_file | telegram_unread | background
+    kind: str = "ui"  # ui | app | open_target | extract_text | media | telegram_message | web | system | resolve_file | telegram_file | telegram_unread | background
     dependencies: list[str] = field(default_factory=list)
     status: str = "pending"  # pending | running | done | failed | waiting_user | cancelled
     attempts: int = 0
@@ -58,24 +58,27 @@ class MissionEngine:
     # tense words inside message text ("что включил музыку") never become new nodes.
     _ACTION = re.compile(
         r"\b(откро|зайд|запуст|перейд|найд|отыщ|добав|полож|отправ|ответ|напиш|"
-        r"скача|сохран|закро|заверш|включ|выключ|постав|продолж|увелич|уменьш|игра)\w*",
+        r"посмотр|проверь|прочита|скача|сохран|закро|заверш|включ|выключ|постав|продолж|увелич|уменьш|игра)\w*",
         re.I,
     )
     _ACTION_TOKEN = re.compile(
         r"\b(?:открой(?:те)?|зайди(?:те)?|запусти(?:те)?|перейди(?:те)?|"
         r"найди(?:те)?|отыщи(?:те)?|добавь(?:те)?|положи(?:те)?|отправь(?:те)?|"
         r"ответь(?:те)?|напиши(?:те)?|скачай(?:те)?|сохрани(?:те)?|закрой(?:те)?|"
+        r"посмотри(?:те)?|проверь(?:те)?|прочитай(?:те)?|"
         r"заверши(?:те)?|включи(?:те)?|выключи(?:те)?|поставь(?:те)?|"
         r"продолжи(?:те)?|увеличь(?:те)?|уменьши(?:те)?|играй(?:те)?)\b", re.I,
     )
     _LONG_HINT = re.compile(
         r"\b(потом|затем|после\s+этого|после\s+чего|дальше|параллельно|одновременно|"
         r"все\s+непрочитан|всем\s+непрочитан|до\s+конца|до\s+результата|самостоятельно|"
+        r"всем\s+кому\s+я\s+не\s+ответил|"
         r"не\s+останавливайся|несколько\s+приложен|в\s+фоне)\w*",
         re.I,
     )
     _APPS: tuple[tuple[str, re.Pattern[str]], ...] = (
         ("telegram", re.compile(r"\b(?:telegram|телеграм\w*|телегр\w*|телега\w*|тг|избранн\w*|saved messages)\b", re.I)),
+        ("mesh", re.compile(r"\b(?:м[эе]ш|mesh|дневник\s+м[эе]ш|московск\w*\s+электронн\w*\s+школ)\b", re.I)),
         ("yandex_music", re.compile(r"\b(яндекс\s*музык\w*|yandex\s*music|моя\s+волна|трек|альбом)\b", re.I)),
         ("browser", re.compile(r"\b(сайт|страниц|браузер|каталог|корзин|товар|магазин)\w*", re.I)),
         ("files", re.compile(r"\b(файл|папк|проводник|explorer|директор)\w*", re.I)),
@@ -93,7 +96,7 @@ class MissionEngine:
         self.gateway = services.gateway
         self.db = services.db
         self.autonomous = getattr(services, "autonomous_workflow", None)
-        self._desktop_lock = threading.RLock()
+        self._desktop_lock = getattr(services, "desktop_lock", None) or threading.RLock()
         self._state_lock = threading.RLock()
 
     @staticmethod
@@ -118,7 +121,10 @@ class MissionEngine:
             re.search(r"\bотправ\w*\b.{0,80}\bфайл\w*\b", text, re.I)
             and re.search(r"\b(?:telegram|телеграм\w*|телегр\w*|тг|почт\w*|discord)\b", text, re.I)
         )
-        quantified_loop = bool(re.search(r"\b(?:все|всем|кажд\w*)\b.{0,60}\b(?:непрочитан|чат|сообщен)\w*", text, re.I))
+        quantified_loop = bool(
+            re.search(r"\b(?:все|всем|кажд\w*)\b.{0,60}\b(?:непрочитан|чат|сообщен)\w*", text, re.I)
+            or re.search(r"\bвсем\b.{0,80}\bкому\b.{0,40}\b(?:я\s+)?не\s+(?:ответил|ответила|написал|написала)\b", text, re.I)
+        )
         explicit_parallel = bool(self._PARALLEL.search(text))
         cross_app = len(apps) >= 2
         # Two-step same-page shopping remains on r18. r19 owns long chains, typed
@@ -160,6 +166,12 @@ class MissionEngine:
             folder = self.tools.execute("explorer_current_folder", {})
             if folder.get("ok"):
                 context["explorer_folder"] = str((folder.get("result") or {}).get("path") or "")
+        except Exception:
+            pass
+        try:
+            selected = self.tools.execute("explorer_selected_files", {})
+            if selected.get("ok"):
+                context["selected_files"] = list((selected.get("result") or {}).get("files") or [])
         except Exception:
             pass
         return context
@@ -234,6 +246,10 @@ class MissionEngine:
             and re.search(r"\b(?:telegram|телеграм\w*|телегр\w*|тг)\b", goal, re.I)
         ):
             return None
+        selected_reference = bool(re.search(
+            r"\b(?:выделенн\w*\s+файл\w*|файл\w*.{0,45}\bкотор\w*.{0,35}\bвыдел\w*)",
+            goal, re.I,
+        ))
         # Capture the object independently from the destination. The filename may be a
         # bare stem (log2) or a full name. Stop before source/destination prepositions.
         m = re.search(
@@ -241,20 +257,27 @@ class MissionEngine:
             goal,
             re.I,
         )
-        file_name = (m.group(1) if m else "").strip(" «»\"'.,!?")
-        if not file_name:
+        file_name = "" if selected_reference else (m.group(1) if m else "").strip(" «»\"'.,!?")
+        if not file_name and not selected_reference:
             file_name = "файл"
         recipient = "Избранное" if re.search(r"\b(?:избранн\w*|saved\s+messages|сохраненн\w*\s+сообщен)\b", goal, re.I) else ""
+        if not recipient:
+            rm = re.search(r"\b(?:отправь|скинь)\w*\s+([A-Za-zА-Яа-яЁё0-9_@.-]{2,60})\s+(?:в|через)\s+(?:telegram|телеграм\w*|телегр\w*|тг)\b", goal, re.I)
+            if rm:
+                recipient = rm.group(1).strip(" ,.")
         if not recipient:
             rm = re.search(r"\b(?:в|для|к)\s+([A-Za-zА-Яа-яЁё0-9_ .-]{2,60})\s+(?:в\s+)?(?:telegram|телеграм\w*|телегр\w*|тг)\b", goal, re.I)
             if rm:
                 recipient = rm.group(1).strip(" ,.")
-        recipient = recipient or "Избранное"
+        recipient_alias = {"тиме":"Тима", "тиму":"Тима", "кириллу":"Кирилл", "мне":"Избранное"}
+        recipient = recipient_alias.get(recipient.casefold(), recipient) if recipient else "Избранное"
+        source = "captured_selection" if selected_reference else "captured_explorer"
+        object_label = "выделенный файл" if selected_reference else f"файл {file_name}"
         resolve = MissionNode(
             id="n1",
-            goal=f"Найди файл {file_name} в исходной открытой папке",
+            goal=f"Зафиксируй {object_label} из Проводника",
             kind="resolve_file",
-            metadata={"file_name": file_name, "source": "captured_explorer"},
+            metadata={"file_name": file_name, "source": source},
         )
         send = MissionNode(
             id="n2",
@@ -266,6 +289,31 @@ class MissionEngine:
             metadata={"artifact_from": "n1", "recipient": recipient},
         )
         return [resolve, send]
+
+    def _mesh_homework_plan(self, goal: str) -> list[MissionNode] | None:
+        """Typed cross-app path for MES homework -> Telegram Saved Messages."""
+
+        if not (
+            re.search(r"\b(?:м[эе]ш|mesh)\b", goal, re.I)
+            and re.search(r"\b(?:домашн\w*\s+задан\w*|дз|задан\w*)\b", goal, re.I)
+            and re.search(r"\b(?:telegram|телеграм\w*|тг|избранн\w*|saved messages)\b", goal, re.I)
+        ):
+            return None
+        when = "на завтра" if re.search(r"\bзавтра\b", goal, re.I) else "на указанную дату"
+        opening = MissionNode(
+            id="n1", goal="Открой электронный дневник МЭШ", kind="open_target",
+            app="mesh", metadata={"target": "МЭШ электронный дневник", "route": "web"},
+        )
+        extract = MissionNode(
+            id="n2", goal=f"Открой в МЭШ домашнее задание {when} и извлеки все предметы и задания",
+            kind="extract_text", app="mesh", dependencies=["n1"],
+        )
+        send = MissionNode(
+            id="n3", goal="Отправь извлечённое домашнее задание в Избранное Telegram",
+            kind="telegram_message", app="telegram", dependencies=["n2"], commit=True,
+            metadata={"artifact_from": "n2", "recipient": "Избранное"},
+        )
+        return [opening, extract, send]
 
     def _split_action_clauses(self, goal: str) -> list[str]:
         text = self._strip_discourse_prefix(goal)
@@ -287,18 +335,23 @@ class MissionEngine:
     def _open_target_text(part: str) -> str:
         value = re.sub(r"^\s*(?:открой(?:те)?|зайди(?:те)?|запусти(?:те)?)\s+", "", str(part or ""), flags=re.I)
         value = re.sub(r"^\s*(?:мне\s+)?(?:сайт|приложение)\s+", "", value, flags=re.I)
+        value = re.sub(r"^\s*(?:в|во|на)\s+", "", value, flags=re.I)
         return value.strip(" ,.;:«»\"'")
 
     @staticmethod
     def _is_telegram_collection(text: str) -> bool:
         q = str(text or "")
         return bool(
-            re.search(r"\b(?:все|всем|кажд\w*)\b.{0,80}\b(?:непрочитан\w*|чат\w*|сообщен\w*)", q, re.I)
+            (re.search(r"\b(?:все|всем|кажд\w*)\b.{0,80}\b(?:непрочитан\w*|чат\w*|сообщен\w*)", q, re.I)
+             or re.search(r"\bвсем\b.{0,80}\bкому\b.{0,40}\b(?:я\s+)?не\s+(?:ответил|ответила|написал|написала)\b", q, re.I))
             and re.search(r"\b(?:ответ\w*|напиш\w*|обработ\w*)", q, re.I)
         )
 
     def _deterministic_plan(self, goal: str, context: dict[str, Any] | None = None) -> list[MissionNode]:
         cleaned_goal = self._strip_discourse_prefix(goal)
+        homework = self._mesh_homework_plan(cleaned_goal)
+        if homework:
+            return homework
         special = self._file_transfer_plan(cleaned_goal)
         if special:
             return special
@@ -311,7 +364,8 @@ class MissionEngine:
             or re.search(r"\bв\s+мо[её]м\s+стиле\b", cleaned_goal, re.I)
             or re.search(r"\bканал\w*\b", cleaned_goal, re.I)
         )
-        if self._is_telegram_collection(cleaned_goal) and telegram_collection_hint:
+        split_parts = self._split_action_clauses(cleaned_goal)
+        if self._is_telegram_collection(cleaned_goal) and telegram_collection_hint and len(split_parts) <= 1:
             collection = MissionNode(
                 id="n1", goal=cleaned_goal, kind="telegram_unread", app="telegram",
                 commit=True, metadata={"skip_non_personal": True, "source": "visible_unread"},
@@ -325,7 +379,7 @@ class MissionEngine:
                 return [opening, collection]
             return [collection]
 
-        parts = self._split_action_clauses(cleaned_goal)
+        parts = split_parts
         nodes: list[MissionNode] = []
         previous = ""
         inherited_app = context_app
@@ -336,6 +390,9 @@ class MissionEngine:
                 continue
             apps = self._apps_for(part)
             explicit_app = next(iter(apps), "") if len(apps) == 1 else ""
+            generic_music = bool(re.match(r"^\s*(?:включи|запусти|поставь|воспроизведи)\w*\s+(?:мне\s+)?(?:музык\w*|песн\w*|трек\w*)", part, re.I))
+            if generic_music:
+                explicit_app = "yandex_music"
             target = self._open_target_text(part) if re.match(r"^\s*(?:открой|запусти|зайди)\w*\b", part, re.I) else ""
             page_local_open = bool(target and re.match(r"^(?:раздел|каталог|корзин|товар|страниц|поиск|меню)\w*", self._norm(target), re.I))
             unknown_open_target = bool(target and not explicit_app and not page_local_open)
@@ -360,6 +417,10 @@ class MissionEngine:
                 kind = "media"
             elif re.match(r"^\s*(?:открой|запусти|зайди)\w*\b", part, re.I) and app in {"telegram", "yandex_music"}:
                 kind = "app"
+            elif re.match(r"^\s*(?:посмотри|проверь|прочитай|узнай)\w*\b", part, re.I) and re.search(
+                r"\b(?:домашн\w*|задан\w*|дз|расписан\w*|урок\w*|оценк\w*|текст\w*|информац\w*)\b", part, re.I
+            ) and app != "telegram":
+                kind = "extract_text"
             elif re.search(r"\b(?:исследуй|собери|сравни|проанализируй)\w*\b", part, re.I) and not app:
                 kind = "background"
 
@@ -369,8 +430,17 @@ class MissionEngine:
                 app=app, parallel_group="p1" if explicit_parallel else "",
                 commit=bool(kind in {"telegram_message", "telegram_unread"} or re.search(r"\b(?:отправ|ответ|напиш|сообщ|удал|добав|полож|оплат|куп)\w*", part, re.I)),
             )
+            if kind == "telegram_message" and re.search(r"\b(?:его|ее|её|это|результат|дз|задание)\b", part, re.I):
+                source = next((n.id for n in reversed(nodes) if n.kind == "extract_text"), "")
+                if source:
+                    node.metadata["artifact_from"] = source
+                    if re.search(r"\b(?:избранн\w*|saved\s+messages|мне)\b", part, re.I):
+                        node.metadata["recipient"] = "Избранное"
             if kind == "open_target":
                 node.metadata["target"] = self._open_target_text(part)
+                if re.match(r"^\s*(?:зайди|перейди)\w*\b", part, re.I):
+                    node.metadata["route"] = "web"
+                inherited_app = "browser"
             nodes.append(node)
             previous = node.id
         return nodes or [MissionNode(id="n1", goal=cleaned_goal or goal, kind="ui", app=context_app)]
@@ -378,7 +448,7 @@ class MissionEngine:
     def _model_plan(self, goal: str, fallback: list[MissionNode]) -> list[MissionNode]:
         # Deterministic special plans are already semantically typed and should not be
         # rewritten by a small model.
-        if any(n.kind in {"resolve_file", "telegram_file", "telegram_unread", "telegram_message", "media", "open_target"} for n in fallback):
+        if any(n.kind in {"resolve_file", "telegram_file", "telegram_unread", "telegram_message", "extract_text", "media", "open_target"} for n in fallback):
             return fallback
         try:
             installed = list(self.gateway.installed_models())
@@ -458,6 +528,33 @@ class MissionEngine:
     def _resolve_file(self, node: MissionNode, mission: dict[str, Any]) -> dict[str, Any]:
         name = str(node.metadata.get("file_name") or "").strip()
         context = dict(mission.get("context") or {})
+        if str(node.metadata.get("source") or "") == "captured_selection":
+            selected = [dict(row) for row in (context.get("selected_files") or []) if isinstance(row, dict)]
+            files = [Path(str(row.get("path") or "")).resolve() for row in selected if not row.get("is_folder") and str(row.get("path") or "")]
+            files = [path for path in files if path.is_file()]
+            if len(files) != 1:
+                try:
+                    live = self.tools.execute("explorer_selected_files", {})
+                    if live.get("ok"):
+                        selected = [dict(row) for row in ((live.get("result") or {}).get("files") or []) if isinstance(row, dict)]
+                        mission.setdefault("context", {})["selected_files"] = selected
+                        files = [Path(str(row.get("path") or "")).resolve() for row in selected if not row.get("is_folder") and str(row.get("path") or "")]
+                        files = [path for path in files if path.is_file()]
+                except Exception:
+                    pass
+            if not files:
+                return {"ok": False, "verified": False, "needs_user": True,
+                        "prompt": "Выдели один нужный файл в Проводнике и скажи «готово».",
+                        "error": "В сохранённом контексте нет выделенного файла"}
+            if len(files) != 1:
+                return {"ok": False, "verified": False, "needs_user": True,
+                        "prompt": "Сейчас выделено несколько файлов. Оставь выделенным один нужный файл и скажи «готово».",
+                        "error": "Для отправки одного файла нужно однозначное выделение"}
+            best = files[0]
+            artifact = {"type": "file", "path": str(best), "name": best.name, "size": best.stat().st_size,
+                        "source": "explorer_selection"}
+            mission.setdefault("artifacts", {})[node.id] = artifact
+            return {"ok": True, "verified": True, "completed": True, "artifact": artifact}
         roots: list[Path] = []
         captured = str(context.get("explorer_folder") or "").strip()
         if captured:
@@ -524,7 +621,7 @@ class MissionEngine:
 
     def _send_telegram_file(self, node: MissionNode, mission: dict[str, Any]) -> dict[str, Any]:
         source_id = str(node.metadata.get("artifact_from") or "")
-        artifact = dict((mission.get("artifacts") or {}).get(source_id) or {})
+        artifact = dict(((mission or {}).get("artifacts") or {}).get(source_id) or {})
         path = str(artifact.get("path") or "")
         recipient = str(node.metadata.get("recipient") or "Избранное")
         if not path or not Path(path).is_file():
@@ -536,14 +633,47 @@ class MissionEngine:
         result = dict(sender(recipient, path) or {})
         return {"ok": bool(result.get("ok") or result.get("sent")), "verified": bool(result.get("verified")), "completed": bool(result.get("sent") or result.get("completed")), **result}
 
-    def _telegram_message(self, node: MissionNode) -> dict[str, Any]:
+    def _extract_text_node(self, node: MissionNode, mission: dict[str, Any], stop_event: threading.Event) -> dict[str, Any]:
+        # First let the bounded UI agent reach the requested view (for example tomorrow's
+        # homework in MES), then extract a typed text artifact from the actual visible UI.
+        navigation = self._ui_node(node, str(mission["id"]), stop_event)
+        if navigation.get("needs_user"):
+            return navigation
+        workflow = getattr(self.services, "universal_workflow", None)
+        extractor = getattr(workflow, "extract_visible_text", None)
+        if not callable(extractor):
+            return {"ok": False, "verified": False, "error": "Text extraction lane unavailable", "navigation": navigation}
+        question = (
+            f"Извлеки только данные, которые просит владелец: {node.goal}. "
+            "Сохрани предметы, задания, даты и формулировки. Если нужных данных на экране нет, ответь ровно NOT_FOUND."
+        )
+        try:
+            text = str(extractor(question, max_chars=16000) or "").strip()
+        except Exception as exc:
+            return {"ok": False, "verified": False, "error": str(exc), "navigation": navigation}
+        if not text or text.strip().upper() == "NOT_FOUND" or re.search(r"\b(?:не\s+видно|нет\s+на\s+экране|не\s+найден)\w*", text, re.I):
+            return {"ok": False, "verified": False, "error": "Нужные данные не появились на текущем экране", "navigation": navigation}
+        artifact = {"type": "text", "text": text[:12000], "source_goal": node.goal}
+        mission.setdefault("artifacts", {})[node.id] = artifact
+        return {"ok": True, "completed": True, "verified": True, "artifact": artifact, "navigation": navigation}
+
+    def _telegram_message(self, node: MissionNode, mission: dict[str, Any] | None = None) -> dict[str, Any]:
         chat = getattr(self.services, "chat", None)
         sender = getattr(chat, "_telegram_send_turn", None)
         if not callable(sender):
             return {"ok": False, "verified": False, "error": "Telegram message lane unavailable"}
-        target = re.sub(r"^\s*(?:напиши|отправь)\w*\s+", "", node.goal, flags=re.I).strip()
-        if not re.search(r"\b(?:telegram|телеграм\w*|телегр\w*|тг)\b", target, re.I):
-            target = f"{target} в telegram"
+        source_id = str(node.metadata.get("artifact_from") or "")
+        if source_id:
+            artifact = dict((mission.get("artifacts") or {}).get(source_id) or {})
+            text = str(artifact.get("text") or "").strip()
+            if not text:
+                return {"ok": False, "verified": False, "error": "Текстовый артефакт потерян до отправки"}
+            recipient = str(node.metadata.get("recipient") or "Избранное")
+            target = f"{recipient} в telegram сообщение {text[:3600]}"
+        else:
+            target = re.sub(r"^\s*(?:напиши|отправь)\w*\s+", "", node.goal, flags=re.I).strip()
+            if not re.search(r"\b(?:telegram|телеграм\w*|телегр\w*|тг)\b", target, re.I):
+                target = f"{target} в telegram"
         acted, answer, route = sender(target)
         route = dict(route or {})
         result = dict(route.get("result") or {})
@@ -556,6 +686,15 @@ class MissionEngine:
         }
 
     def _media_node(self, node: MissionNode, stop_event: threading.Event) -> dict[str, Any]:
+        if node.app == "yandex_music":
+            skills = getattr(self.services, "app_skills", None)
+            try:
+                result = dict(skills.play_music() or {}) if skills is not None else {}
+            except Exception as exc:
+                result = {"ok": False, "verified": False, "error": str(exc)}
+            if result:
+                return {"ok": bool(result.get("ok")), "completed": bool(result.get("ok")),
+                        "verified": bool(result.get("verified")), **result}
         workflow = getattr(self.services, "universal_workflow", None)
         ensure = getattr(workflow, "ensure_media_goal", None)
         if not callable(ensure):
@@ -569,6 +708,14 @@ class MissionEngine:
         target = str(node.metadata.get("target") or self._open_target_text(node.goal)).strip()
         if not target:
             return {"ok": False, "verified": False, "error": "Не распознана цель открытия"}
+        applications = getattr(self.services, "applications", None)
+        if str(node.metadata.get("route") or "") == "web" and applications is not None:
+            try:
+                result = dict(applications.web_fallback(target) or {})
+                return {"ok": bool(result.get("url")), "completed": bool(result.get("url")),
+                        "verified": bool(result.get("url")), "result": result, "target": target}
+            except Exception as exc:
+                return {"ok": False, "verified": False, "error": str(exc), "target": target}
         skills = getattr(self.services, "app_skills", None)
         if skills is not None:
             try:
@@ -577,7 +724,6 @@ class MissionEngine:
                     return {"ok": True, "completed": True, "verified": bool(result.get("verified", True)), "result": result, "target": target}
             except Exception:
                 pass
-        applications = getattr(self.services, "applications", None)
         if applications is not None:
             try:
                 result = dict(applications.web_fallback(target) or {})
@@ -587,25 +733,135 @@ class MissionEngine:
         return {"ok": False, "verified": False, "error": f"Не удалось открыть {target}"}
 
     @staticmethod
-    def _telegram_row_unread_count(raw: str) -> int:
-        # Telegram Web A often exposes unread badges only as a trailing integer in the
-        # accessible ListItem name. Keep it bounded to the left chat-list row parser.
-        m = re.search(r"(?:^|\s)(\d{1,3})\s*$", str(raw or "").strip())
-        return int(m.group(1)) if m else 0
+    def _telegram_unread_count_span(raw: str) -> tuple[int, tuple[int, int] | None]:
+        """Find Telegram's inline unread badge without mistaking ``Aug 9`` for it.
+
+        In Telegram Web K the accessibility row is ordered as preview -> unread count ->
+        title -> mute/time.  A real count therefore has a non-empty, title-like suffix;
+        timestamps, dates, money and numbers embedded in message text are rejected.
+        """
+        value = str(raw or "").strip()
+        chosen: tuple[int, tuple[int, int] | None] = (0, None)
+        for match in re.finditer(r"(?<![\w:.,/])([1-9]\d{0,2})(?![\w:.,/])", value):
+            tail = value[match.end():].strip()
+            if not tail or not re.search(r"[A-Za-zА-Яа-яЁё]", tail):
+                continue
+            # Chat titles normally start with a capital/name/username. This keeps a number
+            # inside a lowercase sentence preview from becoming an unread badge.
+            if not re.match(r"(?:[@#]?[A-ZА-ЯЁ]|[^\w\s])", tail):
+                continue
+            if not re.search(r"(?:\d{1,2}:\d{2}|(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d{1,2}|[\ue000-\uf8ff])\s*$", tail, re.I):
+                continue
+            chosen = (int(match.group(1)), match.span(1))
+        return chosen
+
+    @classmethod
+    def _telegram_row_unread_count(cls, raw: str) -> int:
+        return cls._telegram_unread_count_span(raw)[0]
 
     @staticmethod
-    def _telegram_header_kind(rows: list[dict[str, Any]]) -> str:
+    def _telegram_trim_row_suffix(value: str) -> str:
+        out = str(value or "").strip()
+        out = re.sub(
+            r"\s+(?:[\ue000-\uf8ff]\s*)?(?:\d{1,2}:\d{2}|"
+            r"(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d{1,2})\s*$",
+            "", out, flags=re.I,
+        )
+        return out.strip(" ,.-")
+
+    @staticmethod
+    def _window_rectangle(window: dict[str, Any] | None) -> tuple[int, int, int, int]:
+        rect = list((window or {}).get("rectangle") or [])
+        if len(rect) == 4:
+            try:
+                left, top, right, bottom = (int(value) for value in rect)
+                if right > left and bottom > top:
+                    return left, top, right, bottom
+            except Exception:
+                pass
+        return 0, 0, 1920, 1080
+
+    @classmethod
+    def _telegram_header_kind(
+        cls, rows: list[dict[str, Any]], window_rect: tuple[int, int, int, int] | None = None,
+    ) -> str:
+        left, top, right, bottom = window_rect or (0, 0, 1920, 1080)
+        width, height = right - left, bottom - top
+        content_left = left + int(width * .36)
+        header_bottom = top + max(130, int(height * .23))
         parts: list[str] = []
         for el in rows:
             rect = el.get("rectangle") or []
-            if len(rect) == 4 and int(rect[1]) <= 430 and int(rect[0]) >= 850:
+            if len(rect) == 4 and int(rect[1]) <= header_bottom and int(rect[0]) >= content_left:
                 parts.append(str(el.get("name") or ""))
         blob = " ".join(parts).casefold().replace("ё", "е")
-        if re.search(r"\b(?:subscribers?|подписчик\w*|channel|канал\w*|members?|участник\w*|group|группа)\b", blob, re.I):
+        if re.search(r"\b(?:subscribers?|подписчик\w*|channel|канал\w*)\b", blob, re.I):
+            return "non_personal"
+        # Accessibility trees use the generic control word "group" everywhere. Treat a
+        # chat as a real group only when the header exposes an actual member count or an
+        # explicit standalone group label.
+        if re.search(r"\b\d{1,6}\s+(?:members?|участник\w*)\b", blob, re.I):
+            return "non_personal"
+        if any(re.fullmatch(r"\s*(?:group|группа)\s*", part, re.I) for part in parts):
             return "non_personal"
         if re.search(r"\b(?:last seen|online|был(?:а)?|в сети|заходил(?:а)?)\b", blob, re.I):
             return "personal"
         return "unknown"
+
+    @classmethod
+    def _telegram_chat_candidates(
+        cls,
+        rows: list[dict[str, Any]],
+        operator: Any,
+        window_rect: tuple[int, int, int, int],
+        excluded: set[str],
+    ) -> tuple[list[tuple[int, dict[str, Any], str]], str]:
+        left, top, right, bottom = window_rect
+        width, height = right - left, bottom - top
+        pane_right = left + max(300, min(650, int(width * .42)))
+        list_top = top + max(80, int(height * .10))
+        visible_rows: list[str] = []
+        candidates: list[tuple[int, dict[str, Any], str]] = []
+        for el in rows:
+            if not el.get("visible", True) or not el.get("enabled", True):
+                continue
+            rect = el.get("rectangle") or []
+            if len(rect) != 4:
+                continue
+            x1, y1, x2, y2 = (int(value) for value in rect)
+            if x1 >= pane_right or y1 < list_top or y1 >= bottom or x2 <= left:
+                continue
+            ctype = operator._norm(el.get("control_type"))
+            cls_name = operator._norm(el.get("class_name"))
+            if ctype not in {"button", "listitem", "hyperlink", "treeitem"}:
+                continue
+            raw = re.sub(r"\s+", " ", str(el.get("name") or "")).strip()
+            if not raw:
+                continue
+            visible_rows.append(f"{operator._norm(raw)[:120]}@{max(0, y1-top)//20}")
+            blob = operator._norm(f"{raw} {cls_name} {el.get('automation_id','')}")
+            # U+E952 is the unread marker exposed by the attached Telegram Web K build.
+            # Keep textual/class markers for Desktop and future Web revisions.
+            symbolic = "\ue952" in raw
+            explicit = symbolic or any(mark in blob for mark in ("unread", "непрочитан", "badge unread", "has unread", "new message"))
+            numeric, numeric_span = cls._telegram_unread_count_span(raw) if ("listitem button" in cls_name or "chatlist" in cls_name) else (0, None)
+            if not explicit and not numeric:
+                continue
+            if numeric and numeric_span:
+                cleaned = cls._telegram_trim_row_suffix(raw[numeric_span[1]:])
+            elif symbolic:
+                cleaned = cls._telegram_trim_row_suffix(raw.split("\ue952", 1)[1])
+            else:
+                cleaned = re.sub(r"\b(?:unread|непрочитан\w*|new message)\b.*$", "", raw, flags=re.I).strip()
+            duplicate = re.match(r"^(.{2,80}?)\s+\1(?:\s|$)", cleaned, re.I)
+            name = (duplicate.group(1) if duplicate else re.split(r"\s{2,}|\n", cleaned, maxsplit=1)[0]).strip(" ,.-")
+            key = operator._norm(name)
+            if not key or key in excluded:
+                continue
+            candidates.append((y1, el, name))
+        fingerprint = "|".join(visible_rows[:80])
+        candidates.sort(key=lambda item: item[0])
+        return candidates, fingerprint
 
     def _telegram_unread_replies(self, node: MissionNode, stop_event: threading.Event) -> dict[str, Any]:
         """Reply once to visible unread *personal* chats, skipping channels/groups.
@@ -629,9 +885,14 @@ class MissionEngine:
             return {"ok": False, "verified": False, "error": "Telegram не появился"}
         handle = int(win.get("handle") or 0) or None
         title = str(win.get("title") or "Telegram")
+        window_rect = self._window_rectangle(win)
         replied: set[str] = set()
         skipped: set[str] = set()
         outcomes: list[dict[str, Any]] = []
+        scroll_pages = 0
+        stagnant_pages = 0
+        previous_page = ""
+        collection_exhausted = False
 
         def back_to_list() -> None:
             try:
@@ -644,48 +905,53 @@ class MissionEngine:
                 pass
 
         back_to_list()
-        for _round in range(28):
+        for _round in range(80):
             if stop_event.is_set():
                 return {"ok": False, "verified": False, "error": "cancelled", "replied": sorted(replied)}
             rows = operator._elements(title, limit=650, handle=handle)
-            candidates: list[tuple[int, dict[str, Any], str]] = []
-            for el in rows:
-                if not el.get("visible", True) or not el.get("enabled", True):
-                    continue
-                rect = el.get("rectangle") or []
-                if len(rect) != 4 or int(rect[0]) > 950 or int(rect[1]) < 380:
-                    continue
-                ctype = operator._norm(el.get("control_type"))
-                cls = operator._norm(el.get("class_name"))
-                if ctype not in {"button", "listitem", "hyperlink"}:
-                    continue
-                raw = str(el.get("name") or "").strip()
-                blob = operator._norm(f"{raw} {cls} {el.get('automation_id','')}")
-                explicit = any(m in blob for m in ("unread", "непрочитан", "badge unread", "has unread"))
-                numeric = self._telegram_row_unread_count(raw) if "listitem button" in cls or "listitem-button" in str(el.get("class_name") or "").casefold() else 0
-                if not raw or not explicit and not numeric:
-                    continue
-                name = re.split(r"\s{2,}|\b(?:unread|непрочитан)\b", raw, maxsplit=1, flags=re.I)[0].strip()
-                key = self._norm(name)
-                if not key or key in replied or key in skipped:
-                    continue
-                candidates.append((int(rect[1]), el, name))
+            candidates, page_fingerprint = self._telegram_chat_candidates(
+                rows, operator, window_rect, replied | skipped,
+            )
             if not candidates:
-                break
-            candidates.sort(key=lambda x: x[0])
+                if page_fingerprint and page_fingerprint == previous_page:
+                    stagnant_pages += 1
+                else:
+                    stagnant_pages = 0
+                if stagnant_pages >= 2 or not page_fingerprint:
+                    collection_exhausted = True
+                    break
+                previous_page = page_fingerprint
+                left, top, right, bottom = window_rect
+                x = left + max(120, min(int((right-left) * .22), 360))
+                y = top + int((bottom-top) * .58)
+                operator.tools.execute("mouse_move", {"x": x, "y": y, "duration": .08})
+                scrolled = operator.tools.execute("scroll", {"amount": -9})
+                scroll_pages += 1
+                self._trace("R25_TG_SCROLL_CHAT_LIST", page=scroll_pages, x=x, y=y, ok=bool(scrolled.get("ok")))
+                if stop_event.wait(.24):
+                    return {"ok": False, "verified": False, "error": "cancelled", "replied": sorted(replied)}
+                continue
             _y, element, recipient = candidates[0]
             key = self._norm(recipient)
             if not operator.click_element(title, element, goal="r20_open_unread_candidate"):
                 skipped.add(key)
                 continue
-            time.sleep(.25)
+            if stop_event.wait(.18):
+                return {"ok": False, "verified": False, "error": "cancelled", "replied": sorted(replied)}
             opened_rows = operator._elements(title, limit=260, handle=handle)
-            kind = self._telegram_header_kind(opened_rows)
-            if kind != "personal":
+            kind = self._telegram_header_kind(opened_rows, window_rect)
+            if kind == "non_personal":
                 skipped.add(key)
                 self._trace("R20_TG_SKIP_NONPERSONAL", recipient=recipient, kind=kind)
                 back_to_list()
                 continue
+            if kind == "unknown":
+                # A private chat can hide "online/last seen" for privacy. The unread row
+                # and absence of explicit channel/group evidence are sufficient to process
+                # it once; this fixes the false skips in the attached run.
+                self._trace("R26_TG_PERSONAL_BY_EXCLUSION", recipient=recipient)
+            if stop_event.is_set():
+                return {"ok": False, "verified": False, "error": "cancelled", "replied": sorted(replied)}
             acted, answer, route = reply(recipient=recipient)
             route = dict(route or {})
             inner = dict(route.get("result") or {}) if isinstance(route.get("result"), dict) else {}
@@ -693,10 +959,19 @@ class MissionEngine:
             verified = bool(route.get("verified") or inner.get("verified"))
             outcomes.append({"recipient": recipient, "answer": answer, "completed": completed, "verified": verified})
             replied.add(key)
+            if stop_event.is_set():
+                return {"ok": False, "verified": False, "error": "cancelled", "replied": sorted(replied), "outcomes": outcomes}
             if completed and not verified:
                 return {"ok": False, "completed": True, "verified": False, "error": f"Ответ {recipient} отправлен один раз, но не подтверждён; повтор заблокирован", "outcomes": outcomes}
             back_to_list()
-        return {"ok": True, "completed": True, "verified": True, "replied_count": len(outcomes), "skipped_count": len(skipped), "outcomes": outcomes, "collection_exhausted": True}
+        verified = bool(collection_exhausted)
+        return {
+            "ok": verified, "completed": bool(outcomes), "verified": verified,
+            "replied_count": len(outcomes), "skipped_count": len(skipped),
+            "scroll_pages": scroll_pages, "outcomes": outcomes,
+            "collection_exhausted": collection_exhausted,
+            "error": "" if verified else "Достигнут предел полного обхода списка чатов; уже отправленные ответы не повторяю",
+        }
 
     def _open_app(self, node: MissionNode) -> dict[str, Any]:
         app = node.app or node.goal
@@ -733,6 +1008,17 @@ class MissionEngine:
     def _ui_node(self, node: MissionNode, mission_id: str, stop_event: threading.Event) -> dict[str, Any]:
         # A node gets a private checkpoint namespace. Window anchors are reset by the
         # autonomous engine between calls, so cross-app transitions are intentional.
+        if int(node.metadata.get("strategy_generation") or 0) >= 1:
+            workflow = getattr(self.services, "universal_workflow", None)
+            accessible = getattr(workflow, "accessible_goal", None)
+            if callable(accessible):
+                result = dict(accessible(node.goal, max_steps=12, stop_event=stop_event) or {})
+                return {
+                    "ok": bool(result.get("ok")), "verified": bool(result.get("verified")),
+                    "completed": bool(result.get("completed") or result.get("ok")),
+                    "summary": str(result.get("error") or ""), "strategy": "universal-uia-alternative",
+                    "steps": list(result.get("steps") or []),
+                }
         engine = self.autonomous or getattr(self.services, "autonomous_workflow", None)
         if engine is not None:
             result = engine.execute_goal(
@@ -752,7 +1038,17 @@ class MissionEngine:
         if agent is None or router is None:
             return {"ok": False, "verified": False, "error": "Фоновый агент недоступен"}
         try:
-            report = agent.run(node.goal, model=router.agent_model(node.goal), max_steps=10, external_stop_event=stop_event)
+            # Background nodes may run in parallel only because they cannot touch the
+            # visible desktop.  This prevents a research worker from opening a tab or
+            # clicking while the next foreground mission node is using the same screen.
+            allowed = {
+                "web_search", "system_find", "system_list_files", "system_read_file",
+                "read_file", "list_files", "command_available", "system_diagnostics",
+            }
+            report = agent.run(
+                node.goal, model=router.agent_model(node.goal), max_steps=10,
+                external_stop_event=stop_event, allowed_tools=allowed,
+            )
             return {"ok": True, "verified": True, "completed": True, "report": str(report)}
         except Exception as exc:
             return {"ok": False, "verified": False, "error": str(exc)}
@@ -768,9 +1064,12 @@ class MissionEngine:
         if node.kind == "telegram_unread":
             with self._desktop_lock:
                 return self._telegram_unread_replies(node, stop_event)
+        if node.kind == "extract_text":
+            with self._desktop_lock:
+                return self._extract_text_node(node, mission, stop_event)
         if node.kind == "telegram_message":
             with self._desktop_lock:
-                return self._telegram_message(node)
+                return self._telegram_message(node, mission)
         if node.kind == "media":
             with self._desktop_lock:
                 return self._media_node(node, stop_event)
@@ -863,7 +1162,7 @@ class MissionEngine:
                 break
             ready = [
                 n for n in nodes if n.status in {"pending", "failed"}
-                and n.attempts < 2
+                and n.attempts < 8
                 and all(by_id.get(dep) and by_id[dep].status == "done" for dep in n.dependencies)
             ]
             if not ready:
@@ -883,6 +1182,9 @@ class MissionEngine:
             with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="eirven-mission") as pool:
                 futures = {}
                 for node in ready:
+                    if node.attempts == 4:
+                        node.metadata["strategy_generation"] = 1
+                        self._trace("R25_MISSION_STRATEGY_SWITCH", mission_id=mission_id, node_id=node.id, strategy="alternate-engine")
                     node.status = "running"
                     node.attempts += 1
                     self._trace("R19_NODE_BEGIN", mission_id=mission_id, node=self._node_dict(node))
@@ -914,10 +1216,11 @@ class MissionEngine:
                     error_text = self._norm(result.get("error") or result.get("summary") or "")
                     terminal_policy_failure = node.kind == "ui" and any(mark in error_text for mark in ("local policy unavailable", "локальная модель не ответила", "local policy"))
                     if terminal_policy_failure:
-                        node.attempts = 2
-                        self._trace("R20_NO_BLIND_RETRY", mission_id=mission_id, node_id=node.id, error=str(result.get("error") or result.get("summary") or ""))
-                    elif node.attempts < 2:
-                        self._trace("R19_RECOVER", mission_id=mission_id, node_id=node.id, strategy="fresh-observation-retry", error=str(result.get("error") or result.get("summary") or ""))
+                        node.attempts = max(node.attempts, 4)
+                        self._trace("R25_POLICY_STRATEGY_RESET", mission_id=mission_id, node_id=node.id, error=str(result.get("error") or result.get("summary") or ""))
+                    elif node.attempts < 8:
+                        strategy = "fresh-observation-retry" if node.attempts < 4 else "alternate-engine"
+                        self._trace("R19_RECOVER", mission_id=mission_id, node_id=node.id, strategy=strategy, error=str(result.get("error") or result.get("summary") or ""))
                 self._trace("R19_NODE_END", mission_id=mission_id, node_id=node.id, status=node.status, result=result)
 
             mission["nodes"] = [self._node_dict(n) for n in nodes]

@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import json
+import os
 import re
 import time
+from pathlib import Path
 from typing import Any
+from urllib.parse import unquote, urlparse
 
 from .system_browser import open_url
 from .trace import log_event
@@ -154,9 +158,189 @@ class AppSkills:
         except Exception as exc:
             return {"ok": False, "skill": "discord", "error": str(exc)}
 
+    @staticmethod
+    def _path_from_vscode_uri(value: object) -> Path | None:
+        raw = str(value or "").strip()
+        if not raw:
+            return None
+        try:
+            if raw.startswith("file:"):
+                parsed = urlparse(raw)
+                path_text = unquote(parsed.path or "")
+                if os.name == "nt" and re.match(r"^/[A-Za-z]:/", path_text):
+                    path_text = path_text[1:]
+                path = Path(path_text)
+            else:
+                path = Path(raw)
+            path = path.expanduser()
+            return path.resolve() if path.exists() else None
+        except Exception:
+            return None
+
+    @classmethod
+    def _json_paths(cls, payload: object) -> list[Path]:
+        found: list[Path] = []
+        stack = [payload]
+        while stack:
+            item = stack.pop()
+            if isinstance(item, dict):
+                for key, value in item.items():
+                    key_n = str(key or "").casefold()
+                    if key_n in {"folder", "folderuri", "workspace", "workspaceuri", "configpath"}:
+                        path = cls._path_from_vscode_uri(value)
+                        if path is not None:
+                            if path.is_file() and path.suffix.casefold() == ".code-workspace":
+                                # The workspace file's parent is a safe, useful project root
+                                # when its inner folders are not available in this metadata.
+                                found.append(path.parent)
+                            elif path.is_dir():
+                                found.append(path)
+                    stack.append(value)
+            elif isinstance(item, list):
+                stack.extend(item)
+        return found
+
+    def vscode_workspace(self) -> Path | None:
+        """Resolve the project currently owned by VS Code without guessing a new folder."""
+        candidates: list[tuple[float, Path]] = []
+        seen: set[str] = set()
+
+        def add(path: Path | None, score: float) -> None:
+            if path is None:
+                return
+            try:
+                path = path.resolve()
+                if not path.is_dir():
+                    return
+                key = str(path).casefold()
+                if key in seen:
+                    return
+                seen.add(key)
+                candidates.append((score, path))
+            except Exception:
+                return
+
+        # Command lines are the strongest evidence when Code was launched with a folder.
+        try:
+            result = self.services.tools.execute("process_list", {"name_contains": "Code", "limit": 80})
+            rows = list(result.get("result") or []) if result.get("ok") else []
+            for row in rows:
+                for raw in list((row or {}).get("cmdline") or [])[1:]:
+                    value = str(raw or "").strip('"')
+                    if not value or value.startswith("-"):
+                        continue
+                    add(self._path_from_vscode_uri(value), 120.0)
+        except Exception:
+            pass
+
+        appdata = Path(os.environ.get("APPDATA", "")) if os.environ.get("APPDATA") else None
+        if appdata:
+            user_dir = appdata / "Code" / "User"
+            storage = user_dir / "workspaceStorage"
+            if storage.is_dir():
+                try:
+                    for meta in storage.glob("*/workspace.json"):
+                        try:
+                            payload = json.loads(meta.read_text(encoding="utf-8", errors="replace"))
+                        except Exception:
+                            continue
+                        age_bonus = min(30.0, max(0.0, 30.0 - (time.time() - meta.stat().st_mtime) / 3600.0))
+                        for path in self._json_paths(payload):
+                            add(path, 80.0 + age_bonus)
+                except Exception:
+                    pass
+            global_state = user_dir / "globalStorage" / "storage.json"
+            if global_state.is_file():
+                try:
+                    payload = json.loads(global_state.read_text(encoding="utf-8", errors="replace"))
+                    for path in self._json_paths(payload):
+                        add(path, 65.0)
+                except Exception:
+                    pass
+
+        # Prefer a folder whose name is visible in the active VS Code title.
+        title = ""
+        try:
+            fg = self.services.tools.execute("foreground_window", {})
+            title = str((fg.get("result") or {}).get("title") or "") if fg.get("ok") else ""
+        except Exception:
+            pass
+        title_n = title.casefold()
+        rescored = []
+        for score, path in candidates:
+            if path.name.casefold() and path.name.casefold() in title_n:
+                score += 45.0
+            rescored.append((score, path))
+        if not rescored:
+            return None
+        rescored.sort(key=lambda item: item[0], reverse=True)
+        return rescored[0][1]
+
     def inspect_vscode(self, question: str = "Что за ошибка сейчас в VS Code и как её исправить?") -> dict[str, Any]:
-        opened = self.open("VS Code")
-        if not opened.get("ok"):
-            return opened
-        time.sleep(.2)
-        return {"ok": True, "skill": "vscode", "answer": self.operator.observe(question), "verified": True}
+        try:
+            fg = self.services.tools.execute("foreground_window", {})
+            title = str((fg.get("result") or {}).get("title") or "") if fg.get("ok") else ""
+        except Exception:
+            title = ""
+        if not re.search(r"(?:visual studio code|vs code|vscode|\bcode\b)", title, re.I):
+            opened = self.open("VS Code")
+            if not opened.get("ok"):
+                return opened
+            time.sleep(.2)
+        visible = ""
+        workflow = getattr(self.services, "universal_workflow", None)
+        if workflow is not None:
+            try:
+                visible = str(workflow.extract_visible_text(question) or "")
+            except Exception:
+                visible = ""
+        if not visible:
+            visible = str(self.operator.observe(question) or "")
+        return {"ok": True, "skill": "vscode", "answer": visible, "verified": bool(visible)}
+
+    def repair_vscode(self, question: str = "Найди баг в текущем проекте VS Code и исправь его") -> dict[str, Any]:
+        """Inspect the real active workspace, edit the minimum files, run checks, verify."""
+        workspace = self.vscode_workspace()
+        if workspace is None:
+            return {
+                "ok": False, "skill": "vscode", "verified": False,
+                "error": "Не удалось однозначно определить открытую папку проекта VS Code. Открой папку проекта в VS Code и повтори.",
+            }
+        visible = ""
+        workflow = getattr(self.services, "universal_workflow", None)
+        if workflow is not None:
+            try:
+                visible = str(workflow.extract_visible_text(question) or "")[:5000]
+            except Exception:
+                pass
+        agent = getattr(self.services, "agent", None)
+        router = getattr(self.services, "router", None)
+        if agent is None or router is None:
+            return {"ok": False, "skill": "vscode", "verified": False, "workspace": str(workspace), "error": "Кодовый агент недоступен"}
+        prompt = (
+            "Ты ремонтируешь УЖЕ ОТКРЫТЫЙ проект владельца в VS Code. Не создавай новый проект и не меняй файлы вне указанной папки. "
+            "Сначала просмотри реальные файлы и конфигурацию, затем воспроизведи ошибку подходящей командой тестов/линтера/сборки, "
+            "найди корневую причину, внеси минимальное исправление и ОБЯЗАТЕЛЬНО повтори проверку. "
+            "Можно устанавливать только явно недостающие проектные зависимости через штатный менеджер проекта; не отключай защиту Windows и не удаляй пользовательские данные. "
+            "Если проблема требует секрета, логина, CAPTCHA/UAC или неоднозначного продуктового решения — остановись и попроси одно конкретное действие. "
+            f"\n\nПапка проекта: {workspace}\nЗапрос владельца: {question}"
+        )
+        if visible:
+            prompt += f"\n\nЧто видно в текущем VS Code (может содержать ошибку/терминал):\n{visible}"
+        allowed = {
+            "system_list_files", "system_read_file", "system_write_file", "system_find",
+            "powershell", "command_available", "process_list", "foreground_window",
+        }
+        try:
+            report = agent.run(
+                prompt,
+                model=router.agent_model(question),
+                max_steps=min(getattr(self.services.settings, "max_agent_steps", 16), 18),
+                allowed_tools=allowed,
+                require_tool_action=True,
+                require_side_effect=False,
+                require_verification=True,
+            )
+        except Exception as exc:
+            return {"ok": False, "skill": "vscode", "verified": False, "workspace": str(workspace), "error": str(exc)}
+        return {"ok": True, "skill": "vscode", "verified": True, "workspace": str(workspace), "answer": str(report or "Исправление завершено")}

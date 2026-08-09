@@ -10,6 +10,7 @@ from difflib import SequenceMatcher
 from typing import Any
 
 from .action_model import action_num_gpu
+from .resilience import AdaptiveRecovery
 from .tasks import TaskNeedsUser
 from .trace import log_event
 
@@ -27,6 +28,7 @@ class AutonomousResult:
 class Observation:
     title: str
     handle: int | None
+    pid: int | None
     elements: list[dict[str, Any]]
     compact: str
     fingerprint: str
@@ -93,9 +95,15 @@ class AutonomousWorkflowEngine:
         self.tools = services.tools
         self.operator = services.desktop_operator
         self.gateway = services.gateway
-        self._lock = threading.RLock()
+        # The autonomous policy, deterministic app skills and MissionEngine all operate
+        # on one real foreground desktop.  A shared RLock keeps nested calls safe while
+        # preventing two workflows from acting on different assumptions at once.
+        self._lock = getattr(services, "desktop_lock", None) or threading.RLock()
         self._active_anchor_handle: int | None = None
         self._active_anchor_title = ""
+        self._active_anchor_pid: int | None = None
+        self._active_anchor_browser = False
+        self._browser_handoff_until = 0.0
 
     @staticmethod
     def _norm(text: Any) -> str:
@@ -114,6 +122,30 @@ class AutonomousWorkflowEngine:
             runtime = getattr(self.services, "runtime", None)
             if runtime is not None:
                 runtime.step(text, **meta)
+        except Exception:
+            pass
+
+    def _reset_anchor(self) -> None:
+        self._active_anchor_handle = None
+        self._active_anchor_title = ""
+        self._active_anchor_pid = None
+        self._active_anchor_browser = False
+        self._browser_handoff_until = 0.0
+
+    def _record_experience(
+        self, goal: str, observation: Observation, recovery: AdaptiveRecovery,
+        *, ok: bool, verified: bool, error: str = "", history: list[dict[str, Any]] | None = None,
+    ) -> None:
+        try:
+            cognition = getattr(self.services, "cognition", None)
+            if cognition is None:
+                return
+            result = cognition.record_outcome(
+                goal, observation.title, strategy=recovery.strategy_generation,
+                ok=ok, verified=verified, error=error, steps=history,
+            )
+            if result.get("skill_suggestion"):
+                self._trace("SKILL_SUGGESTION_READY", goal_key=result.get("key"), successes=result.get("successes"))
         except Exception:
             pass
 
@@ -138,6 +170,32 @@ class AutonomousWorkflowEngine:
             self.services.db.set_setting(self._pending_key(conversation_id), {})
         except Exception:
             pass
+
+    @classmethod
+    def _clarification_prompt(cls, goal: str) -> str:
+        """Ask only for information that materially changes a consequential action."""
+        clean = cls._norm(goal)
+        if not clean:
+            return "Что именно нужно сделать?"
+        if "корзин" in clean and re.search(r"\b(?:добав|полож)\w*\b", clean):
+            arbitrary = bool(re.search(r"\b(?:любой|любое|любую|случайн\w*)\b", clean))
+            generic = bool(re.search(
+                r"\b(?:добав|полож)\w*\s+(?:(?:мне|пожалуйста)\s+)?(?:какой то\s+)?(?:товар|позици\w*|что нибудь)\s+(?:в\s+)?корзин",
+                clean,
+            ))
+            if generic and not arbitrary:
+                return "Какой именно товар добавить в корзину? Назови товар или скажи «любой»."
+        if re.search(r"\bудал\w*\b", clean) and re.search(r"\b(?:чат|сообщен)\w*\b", clean):
+            plural_last = bool(re.search(r"\bпоследн(?:ие|их)\s+сообщен\w*\b", clean))
+            has_count = bool(re.search(r"\b(?:одно|два|три|четыре|пять|\d{1,2})\s+(?:последн\w*\s+)?сообщен\w*\b", clean))
+            if plural_last and not has_count:
+                return "Сколько последних сообщений удалить — и удалить их только у тебя или у всех?"
+            has_scope = bool(re.search(r"\b(?:у\s+всех|для\s+всех|у\s+(?:меня|тебя)|только\s+у\s+(?:меня|тебя))\b", clean))
+            if not has_scope:
+                return "Удалить сообщение только у тебя или у всех участников?"
+            if re.search(r"\b(?:в|из)\s+чат\w*\b", clean) and not re.search(r"\b(?:с|у)\s+[a-zа-я0-9_@.-]{2,}\b", clean):
+                return "В каком именно чате удалить сообщения?"
+        return ""
 
     def should_handle(self, query: str, conversation_id: str = "") -> bool:
         if conversation_id and self.has_pending(conversation_id):
@@ -300,6 +358,7 @@ class AutonomousWorkflowEngine:
         win = self._active_window() or {}
         title = str(win.get("title") or "")
         handle = int(win.get("handle") or 0) or None
+        pid = int(win.get("pid") or 0) or None
         window_class = str(win.get("class_name") or "")
         raw_rect = win.get("rectangle") or []
         window_rect = None
@@ -310,12 +369,21 @@ class AutonomousWorkflowEngine:
             window_rect = None
         browser = self._browser_window(title, window_class)
         if self._active_anchor_handle and handle and int(handle) != int(self._active_anchor_handle):
-            raw = f"TITLE={title}\nCONTEXT_LOST expected={self._active_anchor_title!r}"
-            return Observation(
-                title=title, handle=handle, elements=[], compact=raw,
-                fingerprint=hashlib.sha1(raw.encode("utf-8", errors="ignore")).hexdigest(),
-                window_class=window_class, window_rect=window_rect, browser=browser, context_lost=True,
+            legitimate_browser_handoff = bool(
+                browser and self._active_anchor_browser
+                and pid and self._active_anchor_pid and int(pid) == int(self._active_anchor_pid)
+                and time.monotonic() <= self._browser_handoff_until
             )
+            if legitimate_browser_handoff:
+                self._active_anchor_handle = int(handle)
+                self._active_anchor_title = title
+            else:
+                raw = f"TITLE={title}\nCONTEXT_LOST expected={self._active_anchor_title!r}"
+                return Observation(
+                    title=title, handle=handle, pid=pid, elements=[], compact=raw,
+                    fingerprint=hashlib.sha1(raw.encode("utf-8", errors="ignore")).hexdigest(),
+                    window_class=window_class, window_rect=window_rect, browser=browser, context_lost=True,
+                )
         rows: list[dict[str, Any]] = []
         if title and self.operator is not None:
             try:
@@ -353,10 +421,17 @@ class AutonomousWorkflowEngine:
                 break
         raw = f"TITLE={title}\nBROWSER={browser}\n" + "\n".join(lines)
         fingerprint = hashlib.sha1(raw.encode("utf-8", errors="ignore")).hexdigest()
-        return Observation(
-            title=title, handle=handle, elements=useful, compact=raw[:11000], fingerprint=fingerprint,
+        observation = Observation(
+            title=title, handle=handle, pid=pid, elements=useful, compact=raw[:11000], fingerprint=fingerprint,
             window_class=window_class, window_rect=window_rect, browser=browser, context_lost=False,
         )
+        try:
+            cognition = getattr(self.services, "cognition", None)
+            if cognition is not None:
+                cognition.record_observation(title=title, handle=handle, fingerprint=fingerprint, browser=browser)
+        except Exception:
+            pass
+        return observation
 
     def _planner_model(self) -> str:
         settings = self.services.settings
@@ -524,6 +599,62 @@ class AutonomousWorkflowEngine:
             for step in history
         )
 
+        # Generic inbox/chat discovery for unfamiliar sites (Kwork included).  This is
+        # based only on semantic UI roles and unread state, never site coordinates.
+        chat_inspection = bool(re.search(
+            r"\b(?:посмотри|проверь|прочитай|открой)\w*.{0,45}\b(?:чат|диалог|сообщен|переписк)\w*",
+            goal_n, re.I,
+        ))
+        if chat_inspection:
+            grounded, evidence = self._chat_inspection_evidence(goal, observation, history)
+            if grounded:
+                return {"action":"done", "target_index":-1, "reason":"chat inspection grounded",
+                        "evidence":evidence, "expected":"active conversation visible"}
+            inbox_opened = any(
+                step.get("action") == "click" and step.get("ok")
+                and self._norm(step.get("reason")).startswith("chat inbox navigation")
+                for step in history
+            )
+            if not inbox_opened:
+                inbox = self._best_matching_element(
+                    observation,
+                    ["сообщения", "чаты", "диалоги", "переписка", "messages", "inbox", "chats"],
+                    ("Button", "Hyperlink", "ListItem", "MenuItem", "TabItem"),
+                )
+                if inbox and inbox[1] >= 3.0:
+                    return {"action":"click", "target_index":inbox[0],
+                            "reason":"chat inbox navigation: semantic messages section",
+                            "expected":"chat list"}
+
+            specific = re.search(r"\b(?:чат|диалог|переписк)\w*\s+(?:с|у)\s+([a-zа-я0-9_@.-]{2,50})", goal_n, re.I)
+            specific_name = specific.group(1).strip() if specific else ""
+            if specific_name not in {"клиент", "клиентом", "заказчик", "заказчиком", "человек", "человеком"}:
+                peer = self._best_matching_element(
+                    observation, [specific_name],
+                    ("Button", "Hyperlink", "ListItem", "TreeItem"),
+                ) if specific_name else None
+                if peer and peer[1] >= 3.0:
+                    return {"action":"click", "target_index":peer[0],
+                            "reason":"chat peer explicitly named", "expected":specific_name}
+
+            unread: list[dict[str, Any]] = []
+            for element in observation.elements:
+                typ = self._norm(element.get("control_type"))
+                if typ not in {"button", "hyperlink", "listitem", "treeitem"} or not element.get("visible", True) or not element.get("enabled", True):
+                    continue
+                blob = self._norm(self._element_blob(element))
+                if any(mark in blob for mark in ("unread", "непрочитан", "new message", "новое сообщение", "badge unread", "has unread")):
+                    unread.append(element)
+            if len(unread) == 1:
+                return {"action":"click", "target_index":int(unread[0].get("index") or 0),
+                        "reason":"single unread client conversation", "expected":"active conversation"}
+            if inbox_opened and len(unread) > 1:
+                return {"action":"ask_user", "target_index":-1,
+                        "reason":"Вижу несколько непрочитанных диалогов. Уточни имя клиента.", "expected":"recipient clarification"}
+            if inbox_opened and not unread:
+                return {"action":"ask_user", "target_index":-1,
+                        "reason":"Раздел сообщений открыт, но не вижу однозначного непрочитанного чата. Уточни имя клиента.", "expected":"recipient clarification"}
+
         # r18 site navigation is surface-aware. A named destination on a foreground
         # browser page (catalog/category/cart/menu) wins over any OS interpretation.
         nav_target = self._navigation_target(goal) if observation.browser else ""
@@ -563,16 +694,22 @@ class AutonomousWorkflowEngine:
                     return {"action":"click", "target_index":cart[0], "reason":"explicit add-to-cart after arbitrary product", "expected":"cart changed", "commit":True, "subject_visible":True}
             else:
                 ranked=[]
-                banned=("поиск","search","меню","menu","главная","home","каталог","корзин","cart","фильтр","filter","сортир")
+                banned=(
+                    "поиск","search","меню","menu","главная","home","каталог","корзин","cart","фильтр","filter","сортир",
+                    "реклам","promo","promotion","banner","баннер","акция","скидк","sale","campaign","hero",
+                )
                 for e in observation.elements:
                     typ=self._norm(e.get("control_type")); rect=e.get("rectangle") or []
                     if typ not in {"hyperlink","listitem","button","group"} or len(rect)!=4 or not e.get("visible",True):
                         continue
                     name=self._norm(e.get("name")); blob=self._norm(self._element_blob(e))
                     if not name or any(x in blob for x in banned): continue
+                    product_evidence = any(x in blob for x in ("product","товар","card","карточ","price","цена","руб","₽","₽"))
+                    if not product_evidence:
+                        continue
                     score=0.0
-                    if typ in {"hyperlink","listitem"}: score+=1.9
-                    if any(x in blob for x in ("product","товар","card","карточ","price","цена","руб","₽")): score+=3.2
+                    if typ in {"hyperlink","listitem"}: score+=1.2
+                    if product_evidence: score+=3.2
                     if 5 <= len(name) <= 180: score+=1.0
                     if int(rect[1]) > 250: score+=.5
                     ranked.append((score,int(e.get("index") or 0)))
@@ -662,10 +799,17 @@ class AutonomousWorkflowEngine:
 
         return None
 
-    def _decision(self, goal: str, observation: Observation, history: list[dict[str, Any]]) -> dict[str, Any]:
-        heuristic = self._heuristic_decision(goal, observation, history)
+    def _decision(self, goal: str, observation: Observation, history: list[dict[str, Any]], recovery: AdaptiveRecovery | None = None) -> dict[str, Any]:
+        generation = recovery.strategy_generation if recovery is not None else 0
+        heuristic = self._heuristic_decision(goal, observation, history) if generation == 0 else None
         if heuristic:
             return heuristic
+        # The first four semantic/UIA attempts already failed: switch modality before
+        # asking the same small text policy to choose another look-alike control.
+        if generation >= 1 and observation.browser:
+            visual = self._visual_browser_decision(goal, observation, history)
+            if visual:
+                return visual
         # Samsung/Chromium can expose only browser chrome through UIA.  In that case do
         # not ask a text model to hallucinate an affordance from an empty tree; use one
         # bounded screenshot-grounded page action instead.
@@ -693,6 +837,14 @@ class AutonomousWorkflowEngine:
             {k: step.get(k) for k in ("action","target","text","ok","verified","changed","error") if step.get(k) not in (None, "")}
             for step in history[-7:]
         ]
+        recovery_context = recovery.prompt_context() if recovery is not None else "Стратегия 0: свежая попытка."
+        experience_context = ""
+        try:
+            cognition = getattr(self.services, "cognition", None)
+            if cognition is not None:
+                experience_context = cognition.guidance(goal, observation.title)
+        except Exception:
+            experience_context = ""
         prompt = (
             "Ты локальный step-policy r18 для Windows desktop-agent EIRVEN. У тебя есть ОДНА конечная цель владельца и ТЕКУЩЕЕ "
             "состояние интерфейса. Не строй сценарий наперёд. Выбери ровно ОДНО следующее локальное действие по affordances, которые видны сейчас. "
@@ -706,6 +858,8 @@ class AutonomousWorkflowEngine:
             "Никогда не повторяй тот же успешный type/click, если он уже есть в ПОСЛЕДНИХ ДЕЙСТВИЯХ и состояние не изменилось: "
             "измени стратегию (submit, scroll, wait или другой видимый affordance).\n\n"
             f"КОНЕЧНАЯ ЦЕЛЬ: {goal}\n"
+            f"ВОССТАНОВЛЕНИЕ:\n{recovery_context}\n"
+            f"ОПЫТ ПРОШЛЫХ ЗАПУСКОВ:\n{experience_context or 'Нет.'}\n"
             f"СТИЛЬ ВЛАДЕЛЬЦА (для ответов/сообщений): {self._style_prompt()[:1800]}\n"
             f"ПОСЛЕДНИЕ ДЕЙСТВИЯ: {json.dumps(recent, ensure_ascii=False)}\n\n"
             f"ТЕКУЩИЙ UI:\n{observation.compact}"
@@ -778,6 +932,15 @@ class AutonomousWorkflowEngine:
         elif kind == "delete":
             if not re.search(r"\bудал\w*", goal_n):
                 return False, "Удаление не было явно запрошено"
+            if re.search(r"\b(?:telegram|телеграм|чат|сообщен)\w*\b", goal_n):
+                wants_everyone = bool(re.search(r"\b(?:у|для)\s+всех\b", goal_n))
+                wants_self = bool(re.search(r"\b(?:только\s+)?у\s+(?:меня|тебя)\b", goal_n))
+                if not (wants_everyone or wants_self):
+                    return False, "Не указан безопасный охват удаления: у себя или у всех"
+                if wants_everyone and re.search(r"\b(?:delete\s+for\s+me|удалить\s+у\s+меня|только\s+у\s+меня)\b", blob):
+                    return False, "Выбран охват «только у меня», но владелец запросил удаление у всех"
+                if wants_self and re.search(r"\b(?:delete\s+for\s+everyone|удалить\s+у\s+всех|для\s+всех)\b", blob):
+                    return False, "Выбран охват «у всех», но владелец запросил удаление только у себя"
         return True, ""
 
     def _signature(self, observation: Observation, decision: dict[str, Any], element: dict[str, Any] | None, goal: str = "") -> str:
@@ -918,6 +1081,8 @@ class AutonomousWorkflowEngine:
                 return {**result, "ok":False, "completed":True, "verified":False, "error":"Committed visual action already executed; duplicate blocked"}
 
             if stop_event and stop_event.is_set(): return {**result,"ok":False,"verified":False,"cancelled":True,"error":"Остановлено новой командой владельца"}
+            if observation.browser:
+                self._browser_handoff_until = time.monotonic() + 5.5
             self.tools.execute("mouse_move", {"x":px,"y":py,"duration":.12})
             clicked = bool(self.tools.execute("click", {"x":px,"y":py}).get("ok"))
             if not clicked:
@@ -1003,6 +1168,8 @@ class AutonomousWorkflowEngine:
 
         if action == "click":
             if stop_event and stop_event.is_set(): return {**result,"ok":False,"verified":False,"cancelled":True,"error":"Остановлено новой командой владельца"}
+            if observation.browser:
+                self._browser_handoff_until = time.monotonic() + 5.5
             ok = bool(self.operator and self.operator.click_element(observation.title, element, goal=goal))
             if committed_action and ok:
                 committed.add(signature)
@@ -1022,7 +1189,17 @@ class AutonomousWorkflowEngine:
             text = str(decision.get("text") or "").strip()
             if not text:
                 return {**result, "ok":False, "verified":False, "error":"Пустой текст для ввода"}
-            purpose = "search" if any(m in self._norm(self._element_blob(element)) for m in self._SEARCH_FIELD_MARKERS) else "input"
+            element_blob = self._norm(self._element_blob(element))
+            purpose = "search" if any(m in element_blob for m in self._SEARCH_FIELD_MARKERS) else "input"
+            search_goal = bool(self._search_subject(goal))
+            impostor = any(mark in element_blob for mark in (
+                "сортир", "sort", "фильтр", "filter", "диапазон цен", "price range", "количество", "quantity",
+            ))
+            if search_goal and (impostor or purpose != "search"):
+                return {
+                    **result, "text": text, "ok": False, "verified": False,
+                    "error": "Выбранное поле не является поиском страницы; сортировка/фильтр отклонены",
+                }
             acquired = {
                 "ok": True,
                 "title": observation.title,
@@ -1048,10 +1225,48 @@ class AutonomousWorkflowEngine:
         hits = sum(1 for word in words if word in screen)
         return hits >= min(2, len(words))
 
+    def _chat_inspection_evidence(
+        self, goal: str, observation: Observation, history: list[dict[str, Any]],
+    ) -> tuple[bool, str]:
+        goal_n = self._norm(goal)
+        if not re.search(r"\b(?:посмотри|проверь|прочитай|открой)\w*.{0,45}\b(?:чат|диалог|сообщен|переписк)\w*", goal_n, re.I):
+            return False, ""
+        navigated = any(
+            step.get("action") == "click" and step.get("ok")
+            and any(mark in self._norm(step.get("reason")) for mark in (
+                "chat inbox navigation", "single unread client conversation", "chat peer explicitly named",
+            ))
+            for step in history
+        )
+        composer = False
+        message_rows = 0
+        active = False
+        for element in observation.elements:
+            if not element.get("visible", True):
+                continue
+            typ = self._norm(element.get("control_type"))
+            blob = self._norm(self._element_blob(element))
+            if typ in {"edit", "group", "document"} and any(mark in blob for mark in (
+                "message", "сообщение", "reply", "ответ", "composer", "chat input", "написать",
+            )):
+                composer = True
+            if "active" in self._norm(element.get("class_name")) and typ in {"listitem", "hyperlink", "button"}:
+                active = True
+            name = str(element.get("name") or "").strip()
+            if typ in {"text", "listitem", "group"} and 2 <= len(name) <= 800:
+                if not re.fullmatch(r"(?:message|сообщение|reply|ответ|search|поиск)", self._norm(name)):
+                    message_rows += 1
+        if composer and message_rows >= 2 and (navigated or active):
+            return True, "active chat composer and messages visible"
+        return False, ""
+
     def _verify_completion(self, goal: str, observation: Observation, history: list[dict[str, Any]], evidence_hint: str = "") -> tuple[bool, str]:
         goal_n = self._norm(goal)
         screen = self._norm(observation.compact)
         last = history[-1] if history else {}
+        chat_done, chat_evidence = self._chat_inspection_evidence(goal, observation, history)
+        if chat_done:
+            return True, chat_evidence
         # Strong deterministic post-commit evidence for the main acceptance class.
         if "корзин" in goal_n and last.get("commit_kind") == "cart" and last.get("completed"):
             cart_state = any(x in screen for x in ("в корзине", "добавлено в корзину", "cart 1", "корзина 1"))
@@ -1116,19 +1331,29 @@ class AutonomousWorkflowEngine:
                 history = list(pending.get("history") or [])
                 committed = set(str(x) for x in (pending.get("committed") or []))
                 start_step = int(pending.get("step") or len(history))
+                recovery = AdaptiveRecovery.from_dict(pending.get("recovery"))
+                try:
+                    cognition = getattr(self.services, "cognition", None)
+                    if cognition is not None:
+                        cognition.clear_auth_checkpoint()
+                except Exception:
+                    pass
                 self._trace("R16_RESUME", goal=final_goal, step=start_step)
             else:
                 final_goal = str(goal or "").strip()
                 history: list[dict[str, Any]] = []
                 committed: set[str] = set()
                 start_step = 0
+                recovery = AdaptiveRecovery(attempts_per_strategy=4, max_strategy_changes=3)
 
             if not final_goal:
                 return AutonomousResult(False, "Пустая цель.", history)
+            clarification = "" if pending else self._clarification_prompt(final_goal)
+            if clarification:
+                return AutonomousResult(False, clarification, history, needs_user=True, prompt=clarification)
 
             unchanged_streak = 0
-            self._active_anchor_handle = None
-            self._active_anchor_title = ""
+            self._reset_anchor()
             for step_no in range(start_step, max(1, min(int(max_steps), 32))):
                 if stop_event and stop_event.is_set():
                     if conversation_id:
@@ -1143,6 +1368,8 @@ class AutonomousWorkflowEngine:
                 if self._active_anchor_handle is None and observation.handle:
                     self._active_anchor_handle = int(observation.handle)
                     self._active_anchor_title = observation.title
+                    self._active_anchor_pid = observation.pid
+                    self._active_anchor_browser = bool(observation.browser)
                 self._runtime_step(
                     f"Автономный шаг {step_no + 1}: анализирую текущее состояние",
                     stage="autonomous_workflow", step=step_no + 1, title=observation.title,
@@ -1167,18 +1394,26 @@ class AutonomousWorkflowEngine:
                     if terminal_candidate:
                         done, evidence = self._verify_completion(final_goal, observation, history)
                         if done:
+                            self._record_experience(final_goal, observation, recovery, ok=True, verified=True, history=history)
                             if conversation_id:
                                 self._clear_pending(conversation_id)
                             self._trace("R16_DONE", goal=final_goal, step=step_no, evidence=evidence)
                             return AutonomousResult(True, "Готово. Конечная цель достигнута и подтверждена по текущему состоянию.", history)
 
-                decision = self._decision(final_goal, observation, history)
+                decision = self._decision(final_goal, observation, history, recovery)
+                # The local model call above is bounded but not instantaneous.  Re-check
+                # cancellation before trusting its now potentially stale UI decision.
+                if stop_event and stop_event.is_set():
+                    if conversation_id:
+                        self._save_pending(conversation_id, {"goal":final_goal,"history":history,"committed":sorted(committed),"step":step_no,"state":"interrupted","saved_at":time.time()})
+                    return AutonomousResult(False, "Остановила текущую автономную задачу.", history)
                 if str(decision.get("action") or "") == "scroll" and self._norm(decision.get("reason")).startswith("search recovery"):
                     self._trace("R17_RECOVER", goal=final_goal, step=step_no + 1, strategy="scroll", reason=str(decision.get("reason") or ""))
                 self._trace("R16_DECIDE", goal=final_goal, step=step_no + 1, decision=decision)
                 if str(decision.get("action") or "") == "done":
                     done, evidence = self._verify_completion(final_goal, observation, history, str(decision.get("evidence") or ""))
                     if done:
+                        self._record_experience(final_goal, observation, recovery, ok=True, verified=True, history=history)
                         if conversation_id:
                             self._clear_pending(conversation_id)
                         return AutonomousResult(True, "Готово. Конечная цель достигнута и подтверждена по текущему состоянию.", history)
@@ -1187,14 +1422,21 @@ class AutonomousWorkflowEngine:
                     continue
 
                 switching = str(decision.get("action") or "") in {"launch_application", "search_web", "open_url"}
-                old_anchor = (self._active_anchor_handle, self._active_anchor_title)
+                old_anchor = (
+                    self._active_anchor_handle, self._active_anchor_title,
+                    self._active_anchor_pid, self._active_anchor_browser,
+                    self._browser_handoff_until,
+                )
                 if switching:
-                    self._active_anchor_handle = None
-                    self._active_anchor_title = ""
+                    self._reset_anchor()
                 try:
                     local = self._execute_local(final_goal, observation, decision, committed, stop_event=stop_event)
                     if switching and not local.get("ok"):
-                        self._active_anchor_handle, self._active_anchor_title = old_anchor
+                        (
+                            self._active_anchor_handle, self._active_anchor_title,
+                            self._active_anchor_pid, self._active_anchor_browser,
+                            self._browser_handoff_until,
+                        ) = old_anchor
                 except TaskNeedsUser as exc:
                     if conversation_id:
                         self._save_pending(conversation_id, {"goal":final_goal,"history":history,"committed":sorted(committed),"step":step_no,"state":"waiting_user","saved_at":time.time()})
@@ -1217,6 +1459,12 @@ class AutonomousWorkflowEngine:
                     error = self._norm(local.get("error"))
                     if self._AUTH.search(error):
                         prompt = "Я дошла до авторизации/подтверждения. Заверши этот шаг вручную"
+                        try:
+                            cognition = getattr(self.services, "cognition", None)
+                            if cognition is not None:
+                                cognition.save_auth_checkpoint(goal=final_goal, surface=observation.title, conversation_id=conversation_id)
+                        except Exception:
+                            pass
                         if conversation_id:
                             self._save_pending(conversation_id, {"goal":final_goal,"history":history,"committed":sorted(committed),"step":step_no + 1,"state":"waiting_user","saved_at":time.time()})
                         return AutonomousResult(False, prompt + " и скажи «готово».", history, needs_user=True, prompt=prompt)
@@ -1225,17 +1473,36 @@ class AutonomousWorkflowEngine:
                             self._clear_pending(conversation_id)
                         return AutonomousResult(False, str(local.get("error") or "Предкоммит-проверка не пройдена."), history)
 
+                made_progress = bool(local.get("ok") and (local.get("changed") or local.get("verified") or local.get("completed")))
+                if made_progress:
+                    recovery.record_success()
+                else:
+                    self._record_experience(
+                        final_goal, observation, recovery, ok=False, verified=False,
+                        error=str(local.get("error") or local.get("reason") or "интерфейс не изменился"), history=history,
+                    )
+                    directive = recovery.record_failure(
+                        signature=AdaptiveRecovery.signature(observation.fingerprint, local.get("action"), local.get("target")),
+                        reason=str(local.get("error") or local.get("reason") or "интерфейс не изменился"),
+                        completed=bool(local.get("completed")), verified=bool(local.get("verified")),
+                    )
+                    if directive.action == "switch_strategy":
+                        unchanged_streak = 0
+                        self._reset_anchor()
+                        self._trace("ADAPTIVE_STRATEGY_SWITCH", goal=final_goal, generation=directive.strategy_generation)
+                        self._runtime_step("Четыре подхода не сработали — меняю стратегию", stage="adaptive_strategy_switch")
+                    elif directive.action == "stop":
+                        if conversation_id:
+                            self._clear_pending(conversation_id)
+                        return AutonomousResult(False, "Перепробовала несколько разных стратегий; нужен новый ориентир или ручной шаг.", history)
+
                 if local.get("changed"):
                     unchanged_streak = 0
                 else:
                     unchanged_streak += 1
-                if unchanged_streak >= 4:
-                    if conversation_id:
-                        self._clear_pending(conversation_id)
-                    return AutonomousResult(False, "Интерфейс четыре шага подряд не меняется; остановилась без повторения рискованных действий.", history)
 
                 if conversation_id:
-                    self._save_pending(conversation_id, {"goal":final_goal,"history":history,"committed":sorted(committed),"step":step_no + 1,"state":"running","saved_at":time.time()})
+                    self._save_pending(conversation_id, {"goal":final_goal,"history":history,"committed":sorted(committed),"step":step_no + 1,"state":"running","recovery":recovery.to_dict(),"saved_at":time.time()})
 
             if conversation_id:
                 self._clear_pending(conversation_id)

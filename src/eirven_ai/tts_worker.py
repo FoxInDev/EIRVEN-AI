@@ -198,12 +198,24 @@ def _edge_tts_synthesize(text: str, voice: str, profile: dict[str, Any]) -> byte
 
     mode = str(profile.get("mode") or "natural")
     speed = max(.88, min(float(profile.get("speech_speed") or 0.98), 1.08))
-    base = {"energetic": 7, "calm": -7, "quiet": -5, "strict": -1, "warm": -2}.get(mode, 0)
+    base = {
+        "energetic": 7, "calm": -7, "quiet": -5, "strict": -1, "warm": -2,
+        "amused": 6, "sad": -10, "empathetic": -7, "curious": 1,
+        "concerned": -4, "proud": 2, "tired": -11,
+    }.get(mode, 0)
     pct = int(round(base + (speed - 1.0) * 100))
     pct = max(-14, min(16, pct))
     rate = f"{pct:+d}%"
-    pitch = {"energetic": "+3Hz", "calm": "-2Hz", "quiet": "-1Hz", "strict": "-2Hz", "warm": "+1Hz"}.get(mode, "+0Hz")
-    volume = {"quiet": "-12%", "energetic": "+5%", "warm": "+2%", "strict": "+1%"}.get(mode, "+0%")
+    pitch = {
+        "energetic": "+3Hz", "calm": "-2Hz", "quiet": "-1Hz", "strict": "-2Hz",
+        "warm": "+1Hz", "amused": "+4Hz", "sad": "-4Hz", "empathetic": "-1Hz",
+        "curious": "+3Hz", "concerned": "-2Hz", "proud": "+1Hz", "tired": "-5Hz",
+    }.get(mode, "+0Hz")
+    volume = {
+        "quiet": "-12%", "energetic": "+5%", "warm": "+2%", "strict": "+1%",
+        "amused": "+4%", "sad": "-8%", "empathetic": "-2%", "curious": "+1%",
+        "concerned": "-1%", "proud": "+3%", "tired": "-10%",
+    }.get(mode, "+0%")
 
     async def collect() -> bytes:
         communicate = edge_tts.Communicate(text=text[:1200], voice=voice or "ru-RU-SvetlanaNeural", rate=rate, volume=volume, pitch=pitch)

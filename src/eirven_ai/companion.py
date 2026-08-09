@@ -79,6 +79,14 @@ class DesktopCompanion:
     def _human_comment(self, status: dict[str, Any]) -> str:
         if not bool(self.db.get_setting("desktop_comments_enabled", True)):
             return ""
+        try:
+            proactive = self.db.get_setting("proactive_last_comment", None)
+            if isinstance(proactive, dict) and float(proactive.get("expires_at") or 0.0) > time.time():
+                text = self._clean_goal(proactive.get("text") or "", limit=145)
+                if text:
+                    return text
+        except Exception:
+            pass
         if status.get("onboarding_complete") is False:
             return "Давай сначала познакомимся."
         state = str(status.get("state") or "")
@@ -110,13 +118,33 @@ class DesktopCompanion:
 
     @staticmethod
     def _eye_mode(status: dict[str, Any]) -> str:
+        expressive = {
+            "amused", "sad", "empathetic", "curious", "concerned", "proud",
+            "tired", "warm", "calm", "energetic", "quiet", "strict",
+        }
         state = str(status.get("state") or "")
         if state in {"armed", "hearing"}:
             return "listening"
         if state in {"recognizing", "thinking"}:
             return "thinking"
         if bool(status.get("speaking")):
-            return "speaking"
+            emotion = str(status.get("speaking_emotion") or status.get("response_emotion") or "")
+            return emotion if emotion in expressive else "speaking"
+        recent = str(status.get("response_emotion") or "")
+        try:
+            age = float(status.get("emotion_age_seconds"))
+        except (TypeError, ValueError):
+            age = 999.0
+        if recent in expressive and age <= 3.5:
+            return recent
+        mood = status.get("mood") if isinstance(status.get("mood"), dict) else {}
+        mood_emotion = str(mood.get("emotion") or "")
+        try:
+            mood_strength = float(mood.get("strength") or 0.0)
+        except (TypeError, ValueError):
+            mood_strength = 0.0
+        if mood_emotion in expressive and mood_strength >= .34:
+            return mood_emotion
         task = status.get("active_task") if isinstance(status.get("active_task"), dict) else {}
         if str(task.get("status") or "").casefold() in {"done", "completed", "success"}:
             return "happy"
@@ -225,15 +253,28 @@ class DesktopCompanion:
                 "thinking":  (19.5,  0.7, -0.9, "#8068ff", "#f0ecff"),
                 "speaking":  (20.5,  0.2,  0.25, "#6bdfff", "#fff5ff"),
                 "happy":     (20.5, -1.7,  0.0, "#a56cff", "#fff2ff"),
+                "amused":    (21.0, -2.3,  0.35, "#ff7bd8", "#fff4ff"),
+                "sad":       (19.0,  2.35, 0.55, "#7088ff", "#e9efff"),
+                "empathetic":(20.0,  1.25, 0.2,  "#80b7ff", "#f3f7ff"),
+                "curious":   (20.5, -0.4, -1.4, "#61e8dc", "#f3fffd"),
+                "concerned": (19.0,  1.45, -0.75,"#ff9b88", "#fff3ef"),
+                "proud":     (21.0, -1.45, 0.25, "#c57cff", "#fff2ff"),
+                "tired":     (18.5,  1.75, 0.0,  "#7e85b8", "#e9ebff"),
+                "warm":      (20.5, -1.0, 0.0,  "#ff9fcf", "#fff5fb"),
+                "calm":      (20.0,  0.45, 0.0,  "#70d9ff", "#f2fcff"),
+                "energetic": (22.0, -1.4, 0.75, "#58f2ff", "#ffffff"),
+                "quiet":     (18.5,  0.9, 0.0,  "#766fbd", "#eeeaff"),
+                "strict":    (19.5,  0.1, 1.05, "#ff8a9f", "#fff2f5"),
             }
             width, lift, tilt, glow, core = presets.get(mode, presets["idle"])
             if blink:
                 lift = 0.0
                 width *= .92
             # Tiny breathing asymmetry makes the expression alive without becoming cartoonish.
-            talk = math.sin(phase * 1.35) * .55 if mode == "speaking" else 0.0
-            _eye_curve(cx-spread, y-talk, width, lift, tilt=tilt, glow=glow, core=core)
-            _eye_curve(cx+spread, y+talk, width, lift, tilt=-tilt, glow=glow, core=core)
+            talk = math.sin(phase * 1.35) * .55 if mode in {"speaking", "amused", "energetic"} else 0.0
+            asymmetry = 1.6 if mode == "curious" else (-0.8 if mode == "concerned" else 0.0)
+            _eye_curve(cx-spread, y-talk, width, lift + asymmetry, tilt=tilt, glow=glow, core=core)
+            _eye_curve(cx+spread, y+talk, width, lift - asymmetry, tilt=-tilt, glow=glow, core=core)
 
         def animate() -> None:
             nonlocal phase, cached_status, last_status_at, comment, comment_until, last_comment
