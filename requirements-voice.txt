@@ -1,0 +1,12 @@
+onnx-asr[cpu,hub]>=0.12,<1.0
+faster-whisper>=1.2,<2.0
+soundfile>=0.13,<1.0
+sounddevice>=0.5,<1.0
+webrtcvad-wheels>=2.0.14,<3.0
+numpy>=1.26,<3.0
+# Silero RU model is downloaded/validated by bootstrap. Qwen3-TTS is optional and
+# intentionally not installed by default.
+
+# Optional natural multilingual neural voice; bootstrap installs v0.1.7 opportunistically on CUDA.
+# chatterbox-tts==0.1.7
+# No network voice is installed in the supported release. Baya uses local Silero V5.5 RU only.

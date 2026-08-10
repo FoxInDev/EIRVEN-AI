@@ -1,0 +1,56 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "eirven-ai"
+version = "1.6.1"
+description = "Локальный voice-first персональный ИИ с фоновым голосом, задачами и управлением компьютером"
+readme = "README.md"
+requires-python = ">=3.11,<3.14"
+license = {text = "MIT"}
+authors = [{name = "Даниил"}]
+dependencies = [
+  "fastapi>=0.115,<1.0",
+  "uvicorn[standard]>=0.34,<1.0",
+  "httpx>=0.28,<1.0",
+  "pydantic>=2.10,<3.0",
+  "python-multipart>=0.0.20,<1.0",
+  "Pillow>=11,<13",
+  "psutil>=6.1,<8.0",
+  "playwright>=1.49,<2.0",
+  "ddgs>=9.5,<10.0",
+  "pypdf>=5.0,<7.0",
+  "python-docx>=1.1,<2.0",
+  "openpyxl>=3.1,<4.0",
+  "python-pptx>=1.0,<2.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/FoxInDev/EIRVEN-AI"
+Repository = "https://github.com/FoxInDev/EIRVEN-AI"
+Issues = "https://github.com/FoxInDev/EIRVEN-AI/issues"
+
+[project.optional-dependencies]
+voice = ["onnx-asr[cpu,hub]>=0.12,<1.0", "faster-whisper>=1.2,<2.0", "soundfile>=0.13,<1.0", "sounddevice>=0.5,<1.0", "webrtcvad-wheels>=2.0.14,<3.0", "numpy>=1.26,<3.0"]
+desktop = ["pyautogui>=0.9.54,<1.0", "pywinauto>=0.6.9,<1.0; platform_system == 'Windows'", "pystray>=0.19.5,<1.0", "opencv-contrib-python==4.11.0.86", "mediapipe==0.10.21"]
+integrations = ["telethon>=1.40,<2.0"]
+llama-cpp = ["llama-cpp-python>=0.3.34,<1.0"]
+dev = ["pytest>=8.3,<10.0", "ruff>=0.9,<1.0"]
+
+[project.scripts]
+eirven-ai = "eirven_ai.app:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+eirven_ai = ["web/*"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"

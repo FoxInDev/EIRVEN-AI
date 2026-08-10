@@ -1,0 +1,55 @@
+# Python
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+
+# Local configuration and secrets
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+
+# Runtime data and private memory
+data/*
+!data/.gitkeep
+workspace/*
+!workspace/.gitkeep
+
+# Models and generated media
+models/
+*.gguf
+*.onnx
+*.bin
+data/screenshots/
+data/audio/
+
+# Tests, linters, IDE and OS
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Local installation markers and runtime profiles
+.installed-v*
+logs/
+playwright-profile/
+
+loggg2.txt
+loggg2.prev.txt
+
+# Generated public release artifacts
+release/
+*.zip
+SHA256SUMS.txt
