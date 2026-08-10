@@ -30,7 +30,11 @@ class ReliabilityRouter:
     """
 
     APP_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
+<<<<<<< HEAD
         ("telegram", re.compile(r"\b(?:telegram|телеграм\w*|телегр\w*|телега\w*|тг)\b", re.I)),
+=======
+        ("telegram", re.compile(r"\b(?:telegram|т?елеграм\w*|телегр\w*|телега\w*|тг)\b", re.I)),
+>>>>>>> b48a166 (fix: repair mini orb, autostart and Telegram sending)
         ("yandex_music", re.compile(r"\b(?:яндекс\s*музык\w*|yandex\s*music)\b", re.I)),
         ("youtube", re.compile(r"\b(?:youtube|ютуб\w*)\b", re.I)),
         ("spotify", re.compile(r"\b(?:spotify|спотифай\w*)\b", re.I)),
@@ -113,6 +117,25 @@ class ReliabilityRouter:
         if collection and re.search(r"\b(?:ответ|напиш|обработ)\w*", clean, re.I):
             return ReliabilityDecision("mission", reason="bounded collection task", confidence=.99)
         explicit_app, tail = self._app_open(clean)
+<<<<<<< HEAD
+=======
+        if (
+            not explicit_app and mentioned == ["telegram"]
+            and re.match(r"^(?:открой|запусти|включи)\b", clean, re.I)
+            and re.search(r"\b(?:напиши|отправь|скинь)\w*", clean, re.I)
+        ):
+            # Natural voice order can put the platform at the end: ``открой и напиши
+            # Тиме привет в Telegram``.  It is still one deterministic Telegram action,
+            # not an application literally named ``и напиши ...``.
+            remainder=re.sub(
+                r"^(?:открой|запусти|включи)\w*\s*(?:и\s+)?", "", clean,
+                count=1, flags=re.I,
+            ).strip()
+            return ReliabilityDecision(
+                "app_compound", app="telegram", remainder=remainder,
+                reason="telegram platform follows send action", confidence=.98,
+            )
+>>>>>>> b48a166 (fix: repair mini orb, autostart and Telegram sending)
         if len(set(mentioned)) >= 2:
             return ReliabilityDecision("mission", reason="multiple app surfaces", confidence=.99)
         if explicit_app:

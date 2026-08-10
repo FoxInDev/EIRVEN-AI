@@ -37,7 +37,19 @@ def _is_admin() -> bool:
         return False
 
 
+<<<<<<< HEAD
 def _request_elevation() -> bool:
+=======
+def _autostart_requested(argv: list[str] | None = None) -> bool:
+    return "--autostart" in (sys.argv[1:] if argv is None else argv)
+
+
+def _windows_platform() -> bool:
+    return os.name == "nt"
+
+
+def _request_elevation(*, autostart: bool = False) -> bool:
+>>>>>>> b48a166 (fix: repair mini orb, autostart and Telegram sending)
     """Ask for one Windows UAC consent before starting the local core.
 
     EIRVEN stays an interactive user process (not a Windows service), so the elevated
@@ -45,7 +57,14 @@ def _request_elevation() -> bool:
     If the owner declines UAC, the launcher continues in standard mode instead of
     making the application unusable.
     """
+<<<<<<< HEAD
     if os.name != "nt" or not _env_wants_full_access() or _is_admin():
+=======
+    # Windows logon must not stall behind a UAC prompt.  The interactive desktop
+    # launcher can still request full access, while the Startup shortcut deliberately
+    # boots the local voice/orb runtime with the owner's normal desktop token.
+    if autostart or os.name != "nt" or not _env_wants_full_access() or _is_admin():
+>>>>>>> b48a166 (fix: repair mini orb, autostart and Telegram sending)
         return False
     try:
         import ctypes
@@ -64,6 +83,42 @@ def _request_elevation() -> bool:
     return False
 
 
+<<<<<<< HEAD
+=======
+def _repair_existing_autostart() -> bool:
+    """Migrate an already-enabled r29 Startup shortcut to the quiet launcher."""
+    if not _windows_platform():
+        return False
+    try:
+        appdata = os.environ.get("APPDATA", "").strip()
+        if not appdata:
+            return False
+        shortcut = (
+            Path(appdata) / "Microsoft" / "Windows" / "Start Menu"
+            / "Programs" / "Startup" / "EIRVEN AI.lnk"
+        )
+        marker = APP_ROOT / "data" / ".autostart-quiet-launcher"
+        if marker.is_file():
+            return True
+        script = APP_ROOT / "scripts" / "install_autostart.ps1"
+        if not shortcut.is_file() or not script.is_file():
+            return False
+        flags = subprocess.CREATE_NO_WINDOW if hasattr(subprocess, "CREATE_NO_WINDOW") else 0
+        result = subprocess.run(
+            ["powershell", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", str(script)],
+            cwd=str(APP_ROOT), capture_output=True, text=True, timeout=20,
+            creationflags=flags,
+        )
+        if result.returncode != 0:
+            return False
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text("quiet-launcher-v1", encoding="ascii")
+        return True
+    except Exception:
+        return False
+
+
+>>>>>>> b48a166 (fix: repair mini orb, autostart and Telegram sending)
 def _installed_python() -> Path | None:
     candidates = [APP_ROOT / ".venv" / "Scripts" / "pythonw.exe", APP_ROOT / ".venv" / "Scripts" / "python.exe"]
     return next((item for item in candidates if item.exists()), None)
@@ -147,10 +202,20 @@ def _show_orb(port: int) -> None:
 
 
 class LauncherWindow:
+<<<<<<< HEAD
     def __init__(self) -> None:
         import tkinter as tk
         from tkinter import ttk
         self.root = tk.Tk(); self.root.title("EIRVEN AI"); self.root.geometry("590x292"); self.root.resizable(False, False); self.root.configure(bg="#060817")
+=======
+    def __init__(self, *, quiet: bool = False) -> None:
+        import tkinter as tk
+        from tkinter import ttk
+        self.quiet = bool(quiet)
+        self.root = tk.Tk(); self.root.title("EIRVEN AI"); self.root.geometry("590x292"); self.root.resizable(False, False); self.root.configure(bg="#060817")
+        if self.quiet:
+            self.root.withdraw()
+>>>>>>> b48a166 (fix: repair mini orb, autostart and Telegram sending)
         try:
             self.root.iconbitmap(str(APP_ROOT / "assets" / "eirven.ico"))
         except Exception:
@@ -212,6 +277,11 @@ class LauncherWindow:
 
     def fail(self, message: str) -> None:
         def show():
+<<<<<<< HEAD
+=======
+            if self.quiet:
+                self.root.deiconify(); self.root.lift()
+>>>>>>> b48a166 (fix: repair mini orb, autostart and Telegram sending)
             self.progress.stop(); self.status.config(text="Нужна помощь"); self.details.config(text=message[:220], fg="#ff8b9a")
         self.root.after(0, show)
 
@@ -274,5 +344,12 @@ class LauncherWindow:
 
 
 if __name__ == "__main__":
+<<<<<<< HEAD
     if not _request_elevation():
         LauncherWindow().run()
+=======
+    autostart = _autostart_requested()
+    _repair_existing_autostart()
+    if not _request_elevation(autostart=autostart):
+        LauncherWindow(quiet=autostart).run()
+>>>>>>> b48a166 (fix: repair mini orb, autostart and Telegram sending)

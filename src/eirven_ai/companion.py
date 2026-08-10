@@ -153,7 +153,11 @@ class DesktopCompanion:
     def _run(self) -> None:
         try:
             import tkinter as tk
+<<<<<<< HEAD
             from PIL import Image, ImageDraw, ImageFilter, ImageTk
+=======
+            from PIL import Image, ImageTk
+>>>>>>> b48a166 (fix: repair mini orb, autostart and Telegram sending)
         except Exception:
             return
 
@@ -180,12 +184,16 @@ class DesktopCompanion:
         root.geometry(f"{win_w}x{win_h}+{anchor['x']}+{anchor['y']}")
 
         texture = None
+<<<<<<< HEAD
         glow_idle = None
         glow_active = None
+=======
+>>>>>>> b48a166 (fix: repair mini orb, autostart and Telegram sending)
         try:
             image_path = Path(__file__).resolve().parent / "web" / "eirven-orb.png"
             image = Image.open(image_path).convert("RGBA").resize((sphere_size, sphere_size), Image.LANCZOS)
             texture = ImageTk.PhotoImage(image)
+<<<<<<< HEAD
 
             def make_glow(strength: float):
                 size = int(round(sphere_size * 1.92))
@@ -207,6 +215,8 @@ class DesktopCompanion:
 
             glow_idle = make_glow(.72)
             glow_active = make_glow(1.25)
+=======
+>>>>>>> b48a166 (fix: repair mini orb, autostart and Telegram sending)
         except Exception:
             texture = None
 
@@ -341,9 +351,15 @@ class DesktopCompanion:
                 dy = int(round(math.cos(phase * .13) * 3))
                 root.geometry(f"+{anchor['x'] + dx}+{anchor['y'] + dy}")
 
+<<<<<<< HEAD
             if glow_idle is not None:
                 canvas.create_image(cx, cy, image=(glow_active if active and glow_active is not None else glow_idle))
 
+=======
+            # Keep the desktop sprite truly background-free.  A blurred, partially
+            # transparent halo is composited against Tk's chroma-key colour on Windows
+            # and becomes the large dark disk that used to sit behind the mini sphere.
+>>>>>>> b48a166 (fix: repair mini orb, autostart and Telegram sending)
             if texture is not None:
                 canvas.create_image(cx, cy, image=texture)
             else:

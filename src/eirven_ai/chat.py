@@ -961,6 +961,15 @@ class ChatService:
     def _parse_telegram_command(text: str) -> tuple[str, str]:
         """Extract recipient/message without ever treating grammar words as contacts."""
         raw = re.sub(r"\s+", " ", str(text or "")).strip(" .,!?:-")
+<<<<<<< HEAD
+=======
+        # Voice commands may name Telegram after the payload.  Remove only that trailing
+        # platform qualifier so it cannot become the literal message text.
+        raw = re.sub(
+            r"\s+(?:в|через)\s+(?:telegram|т?елеграм\w*|тг)\s*$", "", raw,
+            flags=re.I,
+        ).strip()
+>>>>>>> b48a166 (fix: repair mini orb, autostart and Telegram sending)
         saved = r"(?:избранн\w*|saved\s+messages|сохраненн\w*\s+сообщен\w*)"
         # Message first: ``отправь сообщение привет мне в Избранное``.
         m = re.search(
@@ -1003,7 +1012,11 @@ class ChatService:
         message = m.group(2).strip().strip("«»\"'")
         reserved = {
             "сообщение", "текст", "файл", "всем", "все", "всё", "мне", "кому",
+<<<<<<< HEAD
             "telegram", "телеграм", "телеграмм", "тг",
+=======
+            "telegram", "телеграм", "телеграмм", "елеграм", "тг",
+>>>>>>> b48a166 (fix: repair mini orb, autostart and Telegram sending)
         }
         if recipient.casefold().replace("ё", "е") in {x.replace("ё", "е") for x in reserved}:
             return "", message

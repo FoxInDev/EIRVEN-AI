@@ -516,11 +516,26 @@ class DesktopOperator:
                     visible_evidence=True
             send_ready=bool(self._telegram_send_button(rows,ready_only=True)) if telegram_composer else False
             return field_evidence,visible_evidence,focused_now,bool(send_ready and not ready_before)
+<<<<<<< HEAD
         time.sleep(.18)
         field_evidence,visible_evidence,focused,send_ready=inspect_evidence()
         verified=bool(field_evidence or (focused and visible_evidence) or send_ready)
         paste_retry=False
         if not verified and clipboard_used:
+=======
+        # Chromium/Telegram updates UI Automation a little after the DOM.  Poll the
+        # already-grounded field before considering a paste retry; otherwise a valid
+        # first paste can be duplicated while the accessibility tree is still stale.
+        evidence_deadline=time.monotonic()+(.85 if require_verified else .20)
+        while True:
+            time.sleep(.10)
+            field_evidence,visible_evidence,focused,send_ready=inspect_evidence()
+            verified=bool(field_evidence or (focused and visible_evidence) or send_ready)
+            if verified or time.monotonic()>=evidence_deadline:
+                break
+        paste_retry=False
+        if require_verified and not verified and clipboard_used:
+>>>>>>> b48a166 (fix: repair mini orb, autostart and Telegram sending)
             # Ctrl+V can be swallowed by an overlapping web-composer layer.  Re-ground
             # the caret at the left placeholder zone and replace once through the native
             # Shift+Insert paste gesture. Ctrl+A makes the retry idempotent if the first
@@ -532,7 +547,11 @@ class DesktopOperator:
             field_evidence,visible_evidence,focused,send_ready=inspect_evidence()
             verified=bool(field_evidence or (focused and visible_evidence) or send_ready)
         clipboard_roundtrip=False
+<<<<<<< HEAD
         if not verified and typed:
+=======
+        if require_verified and not verified and typed:
+>>>>>>> b48a166 (fix: repair mini orb, autostart and Telegram sending)
             # Chromium often exposes a perfectly usable HTML input with an empty UIA
             # ValuePattern (and sometimes Focusable=false).  Verify the *actual focused
             # control* by selecting/copying its contents.  A sentinel prevents a failed
@@ -891,8 +910,39 @@ class DesktopOperator:
                 return True
         return False
 
+<<<<<<< HEAD
     def _telegram_chat_evidence(self, rows: list[dict[str, Any]], recipient: str, selected_username: str = "") -> tuple[bool, dict[str, bool]]:
         aliases=self._telegram_recipient_aliases(recipient); address_match=False; header_match=False; active_match=False; composer=False
+=======
+    def _clear_telegram_search(self, acquired: dict[str, Any]) -> dict[str, Any]:
+        """Clear a stale Telegram Web search through its real clear affordance."""
+        title=str(acquired.get("title") or "Telegram")
+        rows=list(acquired.get("rows") or [])
+        clear=next((
+            element for element in rows
+            if element.get("visible",True) and element.get("enabled",True)
+            and "input-search-clear" in str(element.get("class_name") or "").casefold()
+        ),None)
+        if clear is not None and self.click_element(title,clear,goal="telegram_clear_search"):
+            time.sleep(.14)
+            acquired=dict(acquired)
+            acquired["rows"]=self._elements(
+                title,limit=360,handle=int(acquired.get("handle") or 0) or None,
+            )
+            field=dict(acquired.get("field") or {})
+            field["value"]=""
+            acquired["field"]=field
+        return acquired
+
+    def _telegram_chat_evidence(self, rows: list[dict[str, Any]], recipient: str, selected_username: str = "") -> tuple[bool, dict[str, bool]]:
+        aliases=self._telegram_recipient_aliases(recipient); address_match=False; header_match=False; active_match=False; composer=False
+        topbars=[
+            element.get("rectangle") or [] for element in rows
+            if element.get("visible",True)
+            and "sidebar header" in self._norm(element.get("class_name"))
+            and "topbar" in self._norm(element.get("class_name"))
+        ]
+>>>>>>> b48a166 (fix: repair mini orb, autostart and Telegram sending)
         for e in rows:
             if not e.get("visible", True):
                 continue
@@ -902,7 +952,18 @@ class DesktopOperator:
                 address_match=True
             if "chatlist" in cls and "active" in cls and any(alias in name for alias in aliases):
                 active_match=True
+<<<<<<< HEAD
             if len(rect)==4 and int(rect[0])>=760 and 150<=int(rect[1])<=390 and any(alias in name for alias in aliases):
+=======
+            # Telegram K renders the active chat title in the web topbar around y=108,
+            # immediately below Chromium chrome.  The former y>=150 bound rejected the
+            # correct visible header even after a successful chat click.
+            in_topbar=any(self._rect_contains(container,rect) for container in topbars)
+            fallback_topbar=not topbars and len(rect)==4 and int(rect[0])>=420 and 90<=int(rect[1])<=190
+            if len(rect)==4 and (in_topbar or fallback_topbar) and any(
+                name==alias or name.startswith(alias+" ") for alias in aliases
+            ):
+>>>>>>> b48a166 (fix: repair mini orb, autostart and Telegram sending)
                 header_match=True
             if aid in {"editable-message-text","input-message-input"} or any(x in name for x in ("write a message","сообщение")):
                 composer=True
@@ -940,6 +1001,10 @@ class DesktopOperator:
             trigger_aliases=["Search","Поиск"],max_scrolls=0,visual_fallback=False,
         )
         if not search.get("ok"): raise RuntimeError("Telegram открылся, но поле поиска ещё не готово")
+<<<<<<< HEAD
+=======
+        search=self._clear_telegram_search(search)
+>>>>>>> b48a166 (fix: repair mini orb, autostart and Telegram sending)
         search_text = "Saved Messages" if "saved messages" in self._telegram_recipient_aliases(recipient) else recipient
         typed=self.type_verified(search,search_text,submit=False,require_verified=False)
         if not typed.get("typed"):
@@ -1044,6 +1109,10 @@ class DesktopOperator:
         )
         if not search.get("ok"):
             raise RuntimeError("Telegram открыт, но поле поиска не найдено")
+<<<<<<< HEAD
+=======
+        search = self._clear_telegram_search(search)
+>>>>>>> b48a166 (fix: repair mini orb, autostart and Telegram sending)
         search_text = "Saved Messages" if "saved messages" in self._telegram_recipient_aliases(recipient) else recipient
         typed = self.type_verified(search, search_text, submit=False, require_verified=False)
         if not typed.get("typed"):
