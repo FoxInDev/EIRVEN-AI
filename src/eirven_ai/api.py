@@ -336,7 +336,6 @@ class PreferencesRequest(BaseModel):
     desktop_eyes_enabled: bool | None = None
     update_channel: str | None = None
     auto_update_check: bool | None = None
-    adult_photo_enabled: bool | None = None
 
 
 class AdultPhotoRequest(BaseModel):
@@ -566,7 +565,7 @@ def build_api(services: Services) -> FastAPI:
         return FileResponse(
             apk,
             media_type="application/vnd.android.package-archive",
-            filename="EIRVEN-Mobile-1.9.4.apk",
+            filename="EIRVEN-Mobile-1.9.6.apk",
             headers={"Cache-Control": "no-store, max-age=0"},
         )
 
@@ -586,8 +585,8 @@ def build_api(services: Services) -> FastAPI:
 <html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Установка EIRVEN Mobile</title><style>
 :root{{color-scheme:dark}}*{{box-sizing:border-box}}body{{margin:0;min-height:100vh;background:radial-gradient(circle at top,#13244a 0,#090d19 45%,#05070f 100%);color:#eef8ff;font:16px/1.55 system-ui,sans-serif}}main{{max-width:720px;margin:auto;padding:34px 18px 40px}}.card{{padding:26px;border:1px solid rgba(100,142,223,.22);border-radius:28px;background:linear-gradient(180deg,rgba(10,17,35,.92),rgba(7,12,24,.96));box-shadow:0 30px 90px rgba(0,0,0,.34)}}.hero{{display:grid;justify-items:center;text-align:center;gap:12px;margin-bottom:18px}}.ok{{margin:0;color:#dffcff;font-size:31px;letter-spacing:-.04em}}.lead{{margin:0;max-width:540px;color:#aebada}}.orb{{position:relative;width:108px;height:108px;border-radius:50%;filter:drop-shadow(0 0 28px rgba(96,184,255,.36))}}.orb .core{{position:absolute;inset:10%;border-radius:50%;background:radial-gradient(circle at 36% 27%,rgba(255,255,255,.88),rgba(113,240,255,.62) 10%,rgba(94,103,255,.82) 37%,rgba(222,74,235,.63) 66%,rgba(36,14,61,.44) 79%,transparent 82%)}}.orb .aura{{position:absolute;inset:-18%;border-radius:50%;background:radial-gradient(circle,rgba(76,223,255,.2),rgba(125,74,255,.14) 45%,transparent 71%);filter:blur(12px)}}.orb .ring{{position:absolute;border-radius:50%;border:1px solid rgba(135,230,255,.36)}}.orb .one{{inset:6%;animation:spin 7s linear infinite}}.orb .two{{inset:12%;border-color:rgba(255,126,226,.28);animation:spin 10s linear infinite reverse}}.face{{position:absolute;inset:0;z-index:3;pointer-events:none;filter:drop-shadow(0 0 10px rgba(107,221,255,.3))}}.eye{{position:absolute;top:41%;width:11%;height:13%;border-radius:48% 48% 55% 55%;background:radial-gradient(circle at 39% 31%,#fff 0 7%,#bffaff 8% 15%,#6f82ff 25%,#321e8e 52%,#100b3e 78%);border:1px solid rgba(217,251,255,.78);box-shadow:inset 0 -4px 8px rgba(6,8,48,.65),inset 0 2px 6px rgba(255,255,255,.42),0 0 8px #8befff,0 0 16px rgba(147,86,255,.58);overflow:hidden}}.eye:before{{content:"";position:absolute;width:34%;height:39%;left:35%;top:42%;border-radius:50%;background:radial-gradient(circle at 42% 35%,#d9ffff 0 10%,#20308c 17% 58%,#080728 64%);box-shadow:0 0 5px rgba(110,232,255,.82)}}.eye:after{{content:"";position:absolute;width:19%;height:16%;left:20%;top:18%;border-radius:50%;background:#fff;box-shadow:0 0 8px #c9fbff}}.eye.left{{left:32.7%;transform:rotate(-4deg)}}.eye.right{{right:32.7%;transform:rotate(4deg)}}.mouth{{position:absolute;left:50%;top:56%;width:8%;height:4px;transform:translateX(-50%);border-radius:4px 4px 50% 50%;border-bottom:2px solid rgba(224,250,255,.92);box-shadow:0 2px 9px rgba(114,230,255,.45)}}.cheek{{position:absolute;top:55%;width:7.5%;height:3%;border-radius:50%;background:radial-gradient(ellipse,rgba(255,113,220,.48),transparent 68%);filter:blur(2px);opacity:.42}}.cheek.left{{left:27%}}.cheek.right{{right:27%}}a.download{{display:block;margin:22px 0 12px;padding:16px 18px;border-radius:16px;background:linear-gradient(135deg,#59e4ff,#817bff 58%,#ef7bd1);color:#08111e;text-align:center;text-decoration:none;font-weight:800;box-shadow:0 16px 44px rgba(91,117,255,.3)}}.steps{{margin:18px 0 0;padding:0;list-style:none;display:grid;gap:12px}}.steps li{{display:grid;grid-template-columns:28px 1fr;gap:12px;align-items:flex-start;padding:12px 14px;border:1px solid rgba(100,142,223,.14);border-radius:18px;background:rgba(255,255,255,.03)}}.steps span{{display:grid;place-items:center;width:28px;height:28px;border-radius:50%;background:rgba(97,224,255,.14);color:#bff8ff;font-weight:700}}.why{{margin-top:18px;padding:14px 16px;border:1px solid rgba(100,142,223,.14);border-radius:18px;background:rgba(255,255,255,.03);color:#9aa9ca}}small{{display:block;margin-top:16px;color:#8ea1bf;overflow-wrap:anywhere}}code{{color:#bdefff}}@keyframes spin{{to{{transform:rotate(360deg)}}}}
-</style></head><body><main><div class="card"><div class="hero"><div class="orb" aria-hidden="true"><span class="aura"></span><span class="core"></span><span class="ring one"></span><span class="ring two"></span><span class="face"><span class="eye left"></span><span class="eye right"></span><span class="mouth"></span><span class="cheek left"></span><span class="cheek right"></span></span></div><h1 class="ok">Компьютер рядом</h1><p class="lead">Телефон уже видит EIRVEN в домашней сети. Осталось скачать приложение, установить его и ввести код подключения с компьютера.</p></div>
-<a class="download" href="/api/mobile/app.apk?build={APP_BUILD}&sha={digest[:12]}">Скачать EIRVEN Mobile 1.9.4</a>
+</style></head><body><main><div class="card"><div class="hero"><div class="orb" aria-hidden="true"><span class="aura"></span><span class="core"></span><span class="ring one"></span><span class="ring two"></span><span class="face"><span class="eye left"></span><span class="eye right"></span><span class="mouth"></span><span class="cheek left"></span><span class="cheek right"></span></span></div><h1 class="ok">Связь с компьютером есть</h1><p class="lead">Телефон уже видит EIRVEN в домашней сети. Осталось скачать приложение, установить его и ввести код подключения с компьютера.</p></div>
+<a class="download" href="/api/mobile/app.apk?build={APP_BUILD}&sha={digest[:12]}">Скачать EIRVEN Mobile 1.9.6</a>
 <ul class="steps"><li><span>1</span><div><b>Скачай APK</b><div>Нажми кнопку выше и дождись завершения загрузки.</div></div></li><li><span>2</span><div><b>Разреши установку, если Android спросит</b><div>Обычно нужно подтвердить установку приложений из этого браузера один раз.</div></div></li><li><span>3</span><div><b>Открой EIRVEN Mobile</b><div>В приложении введи адрес компьютера и код подключения из раздела «Телефон» на ПК.</div></div></li></ul>
 <div class="why"><b>Зачем этот экран:</b> он показывает, что связь с компьютером уже есть, и даёт правильный APK именно из этой локальной установки EIRVEN.</div>
 <small>EIRVEN {APP_VERSION} · {APP_BUILD}<br>SHA-256: <code>{digest}</code></small></div></main></body></html>"""
@@ -676,92 +675,6 @@ def build_api(services: Services) -> FastAPI:
             "modes": services.modes.status() if services.modes is not None else {},
         }
 
-    @app.get("/api/adult-photo/status")
-    def adult_photo_status() -> dict[str, Any]:
-        enabled = bool(services.db.get_setting("adult_photo_enabled", False))
-        health = services.creative.health() if enabled else {
-            "ok": False,
-            "detail": "Раздел скрыт. Включи его в самом низу общих настроек.",
-        }
-        return {"enabled": enabled, "text_only": True, "fictional_adults_only": True, **health}
-
-    @app.post("/api/adult-photo/generate")
-    async def adult_photo_generate(request: AdultPhotoRequest) -> dict[str, Any]:
-        if not bool(services.db.get_setting("adult_photo_enabled", False)):
-            raise HTTPException(status_code=403, detail="Сначала включи раздел в общих настройках.")
-        try:
-            result = await run_in_threadpool(
-                services.creative.generate_adult_image,
-                request.prompt,
-                mode=request.mode,
-                aspect=request.aspect,
-            )
-        except Exception as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
-        path = Path(str(result.get("path") or "")).resolve()
-        output_dir = services.creative.output_dir.resolve()
-        if not path.is_file() or output_dir not in path.parents:
-            raise HTTPException(status_code=500, detail="Генератор не сохранил готовое изображение.")
-        return {
-            **result,
-            "path": None,
-            "image_url": f"/api/adult-photo/result/{path.name}",
-        }
-
-    @app.post("/api/adult-photo/setup")
-    def adult_photo_setup() -> dict[str, Any]:
-        if not bool(services.db.get_setting("adult_photo_enabled", False)):
-            raise HTTPException(status_code=403, detail="Сначала включи раздел в общих настройках.")
-        script = services.settings.root_dir / "scripts" / "install_photo_engine.py"
-        if not script.is_file():
-            raise HTTPException(status_code=500, detail="Установщик генератора не найден.")
-        current = services.creative.install_status()
-        live = services.creative._installer_process
-        if live is not None and live.poll() is None:
-            return {"started": False, "already_running": True, "install": current, "pid": live.pid}
-        if current.get("running"):
-            pid = int(current.get("pid") or 0)
-            pid_alive = False
-            if pid > 0:
-                try:
-                    import psutil
-
-                    pid_alive = psutil.pid_exists(pid)
-                except Exception:
-                    pid_alive = False
-            # Backward-compatible fallback for an older status file with no PID. Pip/torch
-            # installation may legitimately stay quiet for much longer than five minutes.
-            if pid_alive or (not pid and int(time.time()) - int(current.get("updated_at") or 0) < 1800):
-                return {"started": False, "already_running": True, "install": current, "pid": pid or None}
-        logs = services.settings.root_dir / "logs"
-        logs.mkdir(parents=True, exist_ok=True)
-        output = (logs / "photo_engine_install.log").open("a", encoding="utf-8")
-        flags = 0
-        if os.name == "nt":
-            flags = getattr(subprocess, "CREATE_NO_WINDOW", 0) | getattr(
-                subprocess, "DETACHED_PROCESS", 0
-            )
-        try:
-            process = subprocess.Popen(
-                [sys.executable, str(script)],
-                cwd=services.settings.root_dir,
-                stdout=output,
-                stderr=output,
-                creationflags=flags,
-            )
-        finally:
-            output.close()
-        services.creative._installer_process = process
-        return {"started": True, "already_running": False, "pid": process.pid}
-
-    @app.get("/api/adult-photo/result/{filename}")
-    def adult_photo_result(filename: str) -> FileResponse:
-        if not re.fullmatch(r"generated-[A-Za-z0-9_-]+\.(?:png|jpe?g|webp)", filename, re.I):
-            raise HTTPException(status_code=404, detail="Изображение не найдено")
-        path = (services.creative.output_dir / filename).resolve()
-        if services.creative.output_dir.resolve() not in path.parents or not path.is_file():
-            raise HTTPException(status_code=404, detail="Изображение не найдено")
-        return FileResponse(path, media_type=mimetypes.guess_type(path.name)[0] or "image/png")
 
     @app.get("/api/hardware")
     def hardware() -> dict[str, Any]:
@@ -1300,7 +1213,6 @@ def build_api(services: Services) -> FastAPI:
             "desktop_eyes_enabled": bool(services.db.get_setting("desktop_eyes_enabled", True)),
             "update_channel": str(services.db.get_setting("update_channel", "stable") or "stable"),
             "auto_update_check": bool(services.db.get_setting("auto_update_check", True)),
-            "adult_photo_enabled": bool(services.db.get_setting("adult_photo_enabled", False)),
             "version": APP_VERSION,
             "build": APP_BUILD,
         }
@@ -1339,8 +1251,6 @@ def build_api(services: Services) -> FastAPI:
             services.db.set_setting("update_channel", channel)
         if "auto_update_check" in values:
             services.db.set_setting("auto_update_check", bool(values["auto_update_check"]))
-        if "adult_photo_enabled" in values:
-            services.db.set_setting("adult_photo_enabled", bool(values["adult_photo_enabled"]))
         if "autostart" in values:
             try:
                 _set_autostart(bool(values["autostart"]))

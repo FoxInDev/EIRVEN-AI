@@ -89,10 +89,15 @@
     }
     if (!response.ok) {
       let message = "";
-      try {
-        const data = await response.json();
-        message = data.detail || data.message || "";
-      } catch { message = await response.text(); }
+      const raw = await response.text();
+      if (raw) {
+        try {
+          const data = JSON.parse(raw);
+          message = data.detail || data.message || raw;
+        } catch {
+          message = raw;
+        }
+      }
       if (response.status === 401) message = "Код подключения неверный или был изменён на компьютере.";
       throw new Error(message || `Ошибка HTTP ${response.status}`);
     }
@@ -115,6 +120,7 @@
     const button = $("#connect-button");
     const status = $("#pairing-status");
     status.classList.remove("error");
+    let paired = false;
     try {
       state.base = normalizeBase($("#server-input").value);
       state.token = normalizeToken($("#token-input").value);
@@ -126,6 +132,10 @@
       let info;
       try { info = await api("/api/mobile/status", controller ? { signal: controller.signal } : {}); }
       finally { if (timeout) clearTimeout(timeout); }
+
+      // From this point pairing itself succeeded. Do not throw the user back to the
+      // code screen just because history/tasks have a temporary backend problem.
+      paired = true;
       state.status = info;
       storage.set("eirven-mobile-server", state.base);
       storage.set("eirven-mobile-token", state.token);
@@ -134,16 +144,26 @@
       $("#pairing-screen").hidden = true;
       $("#app-shell").hidden = false;
       showScreen("chat");
-      await ensureConversation();
-      await loadHistory();
-      await loadTasks();
+      setConnectionOnline(true);
+      status.textContent = "Подключено";
+
+      try {
+        await ensureConversation();
+        await loadHistory();
+      } catch (error) {
+        $("#messages").innerHTML = "";
+        messageNode("assistant", `Связь с компьютером есть, но чат пока не открылся: ${error.message}. Попробуй отправить сообщение — я повторю подключение автоматически.`);
+      }
+      try { await loadTasks(); } catch {}
       requestMicrophonePermission();
       if (!silent) toast("Телефон подключён к EIRVEN");
     } catch (error) {
-      status.textContent = error.message;
-      status.classList.add("error");
-      $("#pairing-screen").hidden = false;
-      $("#app-shell").hidden = true;
+      if (!paired) {
+        status.textContent = error.message;
+        status.classList.add("error");
+        $("#pairing-screen").hidden = false;
+        $("#app-shell").hidden = true;
+      }
     } finally {
       button.disabled = false;
       button.textContent = "Подключиться";

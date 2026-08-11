@@ -16,9 +16,9 @@ VSVersionInfo(
         [StringStruct(u'CompanyName', u'EIRVEN'),
          StringStruct(u'FileDescription', u'EIRVEN AI'),
          StringStruct(u'FileVersion', u'1.7.3.37'),
-         StringStruct(u'InternalName', u'EIRVEN-AI-r37'),
+         StringStruct(u'InternalName', u'EIRVEN-AI'),
          StringStruct(u'LegalCopyright', u'EIRVEN'),
-         StringStruct(u'OriginalFilename', u'EIRVEN-AI-r37.exe'),
+         StringStruct(u'OriginalFilename', u'EIRVEN-AI.exe'),
          StringStruct(u'ProductName', u'EIRVEN AI'),
          StringStruct(u'ProductVersion', u'1.7.3.37')]
       )

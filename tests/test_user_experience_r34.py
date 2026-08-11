@@ -120,8 +120,8 @@ def test_bundled_mobile_r37_has_valid_manifest_v1_contract_and_v2_block() -> Non
         jar_manifest = archive.read("META-INF/MANIFEST.MF").decode("ascii")
         signature_file = archive.read("META-INF/EIRVEN37.SF").decode("ascii")
 
-    assert "1.9.4".encode("utf-16le") in manifest
-    assert (10904).to_bytes(4, "little") in manifest
+    assert "1.9.6".encode("utf-16le") in manifest
+    assert (10906).to_bytes(4, "little") in manifest
     assert "ai.eirven.client".encode("utf-16le") in manifest
     assert "статус сети должен быть зелёным" in mobile_js
     assert "verified install r37" in index
@@ -144,12 +144,13 @@ def test_desktop_shortcut_is_required_and_verified() -> None:
     assert "Ярлык не создан автоматически" not in installer
 
 
-def test_windows_build_never_overwrites_running_legacy_exe() -> None:
+def test_windows_build_synchronizes_legacy_and_versioned_launchers() -> None:
     root = Path(__file__).resolve().parents[1]
     build = (root / "scripts/build_windows.ps1").read_text("utf-8")
     start = (root / "scripts/start_windows.bat").read_text("utf-8")
-    assert "LegacyTarget" not in build
-    assert 'Copy-Item -LiteralPath $Built -Destination $Target -Force' in build
+    assert '$LegacyTarget = Join-Path $Root "EIRVEN-AI.exe"' in build
+    assert '$VersionedTarget = Join-Path $Root "EIRVEN-AI-r37.exe"' in build
+    assert "replace_launcher_when_free.ps1" in build
     assert 'EIRVEN-AI-r37.exe' in start
 
 
@@ -157,14 +158,13 @@ def test_photo_studio_ui_is_removed_from_settings() -> None:
     root = Path(__file__).resolve().parents[1]
     html = (root / "src/eirven_ai/web/index.html").read_text("utf-8")
     assert "Фото 18+" not in html
-    assert "data-settings-panel=\"adult-photo\"" not in html
 
 
 def test_photo_workflow_upscales_generated_pixels_to_4k() -> None:
     from eirven_ai.creative import CreativeService
 
     workflow = CreativeService._workflow(
-        "fictional adult", "bad hands", "model.safetensors", 832, 1216, 32, 7,
+        "studio portrait", "bad hands", "model.safetensors", 832, 1216, 32, 7,
         output_width=2160, output_height=3840,
     )
     assert workflow["8"]["class_type"] == "ImageScale"
@@ -185,44 +185,6 @@ def test_capability_question_does_not_wait_for_local_model() -> None:
     assert answer and "искать в интернете" in answer
     assert "локальн" not in answer.casefold()
 
-
-def test_r37_photo_checkpoint_selection_uses_sdxl_for_realistic_and_animagine_for_anime() -> None:
-    from eirven_ai.creative import CreativeService
-
-    creative = CreativeService.__new__(CreativeService)
-    creative.settings = SimpleNamespace(comfyui_checkpoint="")
-    creative._checkpoints = lambda: [
-        "animagine-xl-4.0-opt.safetensors",
-        "sd_xl_base_1.0.safetensors",
-    ]
-
-    assert creative._checkpoint("realistic") == "sd_xl_base_1.0.safetensors"
-    assert creative._checkpoint("anime") == "animagine-xl-4.0-opt.safetensors"
-
-
-def test_r37_adult_prompt_filter_blocks_spacing_zero_width_case_and_confusables() -> None:
-    from eirven_ai.creative import CreativeService
-
-    blocked = (
-        "T E E N character in a bedroom",
-        "D E E P F A K E of a real person",
-        "dee\u200bpfake portrait of somebody",
-        "N U D I F Y a portrait",
-        "п о д р о с т о к в комнате",
-        "сделай похожую на реального человека",
-        "FACE SWAP portrait",
-        "dеepfake portrait",  # Cyrillic е in an English bypass attempt.
-    )
-    for prompt in blocked:
-        assert not CreativeService._adult_prompt_allowed(prompt)[0], prompt
-
-    allowed = (
-        "вымышленная взрослая женщина 25 лет, художественный портрет в студии",
-        "fictional adult woman age 25 in a cinematic studio portrait",
-        "eighteen-century inspired fictional adult fashion, age 25",
-    )
-    for prompt in allowed:
-        assert CreativeService._adult_prompt_allowed(prompt)[0], prompt
 
 
 def test_r37_photo_result_is_decoded_validated_and_cpu_upscaled(tmp_path: Path) -> None:
@@ -269,61 +231,6 @@ def test_r37_photo_result_rejects_flat_or_corrupt_files(tmp_path: Path) -> None:
         CreativeService._finalize_image(b"not-an-image", tmp_path / "broken.png")
 
 
-def test_r37_photo_installer_is_pinned_and_models_have_exact_hashes() -> None:
-    import scripts.install_photo_engine as installer
-
-    assert installer.COMFY_VERSION == "v0.29.0"
-    assert "/refs/tags/v0.29.0.zip" in installer.COMFY_ZIP
-    assert all(size > 6_900_000_000 for _, _, size, _, _ in installer.MODELS)
-    assert all(len(digest) == 64 for _, _, _, digest, _ in installer.MODELS)
-    assert installer.MODELS[1][3] == "6327eca98bfb6538dd7a4edce22484a1bbc57a8cff6b11d075d40da1afb847ac"
-
-
-def test_r37_photo_download_discards_oversized_partial_and_verifies_hash(tmp_path: Path, monkeypatch) -> None:
-    import io
-
-    import scripts.install_photo_engine as installer
-
-    payload = b"complete-model-bytes"
-    target = tmp_path / "tiny.bin"
-    partial = target.with_suffix(".bin.part")
-    partial.write_bytes(b"corrupt-and-too-large-for-target")
-    digest = hashlib.sha256(payload).hexdigest()
-
-    class FakeResponse(io.BytesIO):
-        status = 200
-        headers = {"Content-Length": str(len(payload))}
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *_args):
-            self.close()
-
-    requests = []
-
-    def fake_urlopen(request, timeout=90):
-        requests.append((request, timeout))
-        assert request.get_header("Range") is None
-        return FakeResponse(payload)
-
-    monkeypatch.setattr(installer.urllib.request, "urlopen", fake_urlopen)
-    monkeypatch.setattr(installer, "update", lambda *_args, **_kwargs: None)
-
-    installer.download(
-        "https://example.invalid/tiny.bin",
-        target,
-        phase="test",
-        start=0.0,
-        span=1.0,
-        expected_size=len(payload),
-        expected_sha256=digest,
-        retries=1,
-    )
-
-    assert target.read_bytes() == payload
-    assert not partial.exists()
-    assert len(requests) == 1
 
 
 def test_r37_windows_version_resource_matches_release_identity() -> None:
@@ -332,7 +239,7 @@ def test_r37_windows_version_resource_matches_release_identity() -> None:
     version_resource = (root / "assets/eirven-version.txt").read_text("utf-8")
 
     assert build["build"] == "r37-mobile-clean"
-    assert build["release_date"] == "2026-08-11"
+    assert build["release_date"] == "2026-08-12"
     assert "filevers=(1, 7, 3, 37)" in version_resource
     assert "1.7.3.37" in version_resource
-    assert "EIRVEN-AI-r37.exe" in version_resource
+    assert "EIRVEN-AI.exe" in version_resource

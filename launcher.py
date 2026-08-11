@@ -114,6 +114,28 @@ def _installed_python() -> Path | None:
     return next((item for item in candidates if item.exists()), None)
 
 
+def _runtime_imports_ready(python: Path) -> bool:
+    """Cheap sanity check before repairing a missing release marker.
+
+    A partial venv from a failed first install must not be mistaken for a complete
+    installation merely because python.exe exists.
+    """
+    try:
+        exe = python
+        if exe.name.casefold() == "pythonw.exe":
+            console = exe.with_name("python.exe")
+            if console.is_file():
+                exe = console
+        flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" and hasattr(subprocess, "CREATE_NO_WINDOW") else 0
+        result = subprocess.run(
+            [str(exe), "-c", "import eirven_ai,fastapi,uvicorn,httpx,pydantic"],
+            cwd=str(APP_ROOT), capture_output=True, timeout=20, creationflags=flags,
+        )
+        return result.returncode == 0
+    except Exception:
+        return False
+
+
 def _write_mobile_network_status(port: int, ready: bool, detail: str) -> None:
     """Expose the launch-time firewall result to the desktop phone panel."""
     try:
@@ -427,7 +449,7 @@ class LauncherWindow:
             python = _installed_python()
             # Each release marker runs the idempotent upgrade once.
             marker = APP_ROOT / ".installed-v1.7.3-r37"
-            if python is not None and not marker.exists():
+            if python is not None and not marker.exists() and _runtime_imports_ready(python):
                 try:
                     marker.write_text("launcher-repaired-marker", encoding="utf-8")
                 except Exception:

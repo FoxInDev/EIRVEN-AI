@@ -45,29 +45,6 @@ Launcher по коду и тестам принудительно передаё
 
 **Не выполнялось:** официальный `apksigner verify --verbose --print-certs` и `adb install`, потому что Android SDK/ADB/эмулятор в текущей среде отсутствуют. Поэтому первая установка на API 21 и API 34/35, запуск WebView и системный запрос микрофона всё ещё требуют acceptance-проверки на Android.
 
-### «Фото 18+»
-
-Проверено кодом и тестами:
-
-- переключатель выключен по умолчанию и находится последней строкой в `Общее`;
-- вкладка скрыта до включения preference;
-- загрузки фото нет; route принимает только текст;
-- доступны Realistic / Anime и portrait / square / landscape;
-- Realistic детерминированно выбирает `sd_xl_base_1.0.safetensors`, Anime — `animagine-xl-4.0-opt.safetensors`;
-- prompt filter блокирует несовершеннолетних, `nudify`, `deepfake`, face swap/real-person likeness; добавлены проверки mixed case, zero-width, разнесённых букв и части Cyrillic/Latin confusable-вариантов;
-- нормальные adult fictional prompts на русском и английском проходят;
-- ComfyUI зафиксирован на immutable release `v0.29.0`, а не `master`;
-- SDXL и Animagine скачиваются с pinned revision; для обеих заданы точный размер и SHA-256;
-- `.part` не повышается до готового файла при обрыве; oversized/corrupt partial сбрасывается, Range resume проверяет диапазон, есть ограниченные повторы;
-- установка имеет lock/PID и не должна запускаться вторым экземпляром при длинном pip/model download;
-- предусмотрены NVIDIA `cu128` и CPU-only PyTorch paths;
-- итоговый 4K resize перенесён из GPU `ImageScale` в CPU/Pillow Lanczos, чтобы не держать 4K-тензор в VRAM;
-- перед выдачей результат декодируется и проверяется: минимальный размер, точные итоговые dimensions, повреждённый файл, слишком маленький файл и практически однотонный кадр отклоняются;
-- UI по-прежнему честно предупреждает, что идеальные пальцы/анатомия не гарантируются.
-
-Upstream-проверка перед релизом подтвердила существование ComfyUI `v0.29.0`, обеих model revisions, публичную загрузку через Hugging Face/Xet, размеры и SHA-256. Лицензионные notices добавлены в `THIRD_PARTY_NOTICES.md`; при установке также создаётся `data/photo_engine/MODEL_LICENSES.txt`.
-
-**Не выполнялось:** реальная загрузка ~13.9 ГБ checkpoint-файлов и фактическая генерация на ComfyUI/Windows/NVIDIA. По этой причине раздел явно обозначен `PREVIEW`, пока не пройдёт acceptance-тест на целевом ПК. CPU-path проверен логикой/тестами, но реальная генерация на CPU также не запускалась.
 
 ## Что не удалось подтвердить в этой среде
 

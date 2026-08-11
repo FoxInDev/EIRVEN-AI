@@ -69,7 +69,7 @@ def test_phone_panel_qr_target_downloads_bundled_apk_without_pairing(
         )
         assert download.headers["access-control-allow-origin"] == "null"
         assert download.headers["cache-control"] == "no-store, max-age=0"
-        assert download.headers["content-disposition"].endswith('filename="EIRVEN-Mobile-1.9.4.apk"')
+        assert download.headers["content-disposition"].endswith('filename="EIRVEN-Mobile-1.9.6.apk"')
         assert int(download.headers["content-length"]) == len(payload)
         head = phone.head("/api/mobile/app.apk", headers={"Origin": "null"})
         assert head.status_code == 200

@@ -69,11 +69,11 @@ test('телефон видит подтверждение связи и ска�
   test.skip(!installUrl, 'Запускается только вместе с локальным API EIRVEN');
   await page.goto(installUrl);
   await expect(page.getByRole('heading', { name: 'Связь с компьютером есть' })).toBeVisible();
-  await expect(page.getByRole('link', { name: 'Скачать EIRVEN Mobile 1.9.4' })).toBeVisible();
+  await expect(page.getByRole('link', { name: 'Скачать EIRVEN Mobile 1.9.6' })).toBeVisible();
   const downloadPromise = page.waitForEvent('download');
-  await page.getByRole('link', { name: 'Скачать EIRVEN Mobile 1.9.4' }).click();
+  await page.getByRole('link', { name: 'Скачать EIRVEN Mobile 1.9.6' }).click();
   const download = await downloadPromise;
-  expect(download.suggestedFilename()).toBe('EIRVEN-Mobile-1.9.4.apk');
+  expect(download.suggestedFilename()).toBe('EIRVEN-Mobile-1.9.6.apk');
   await page.screenshot({ path: '/tmp/eirven-r37-phone-install.png', fullPage: true });
 });
 

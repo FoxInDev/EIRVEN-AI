@@ -106,7 +106,10 @@ class IdentityService:
         identity.ambient_music_volume = 0.0
         identity.speech_speed = 1.0
         identity.strict_wake_name = True
-        identity.onboarding_completed = bool(identity.onboarding_completed)
+        # Repair old/partial releases that saved the chosen names but lost only the
+        # onboarding flag. A genuinely fresh install has no owner name, so it still
+        # shows onboarding exactly once.
+        identity.onboarding_completed = bool(identity.onboarding_completed or identity.user_address)
         return identity
 
     def get(self) -> Identity:

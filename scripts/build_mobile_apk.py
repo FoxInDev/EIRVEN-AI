@@ -195,10 +195,13 @@ def load_entries(base_apk: Path, assets_dir: Path) -> list[tuple[str, bytes, int
             if local_asset is not None and local_asset.is_file():
                 data = local_asset.read_bytes()
             if name == "AndroidManifest.xml":
-                if b"1.9.3".decode().encode("utf-16le") not in data:
-                    raise RuntimeError("Base manifest is not the expected 1.9.3 build")
-                data = data.replace("1.9.3".encode("utf-16le"), "1.9.4".encode("utf-16le"), 1)
-                data = data.replace(struct.pack("<I", 10903), struct.pack("<I", 10904), 1)
+                old_version = "1.9.5".encode("utf-16le")
+                new_version = "1.9.6".encode("utf-16le")
+                if old_version in data:
+                    data = data.replace(old_version, new_version, 1)
+                    data = data.replace(struct.pack("<I", 10905), struct.pack("<I", 10906), 1)
+                elif new_version not in data:
+                    raise RuntimeError("Base manifest is not the expected 1.9.5/1.9.6 build")
             compression = (
                 zipfile.ZIP_STORED
                 if item.compress_type == zipfile.ZIP_STORED or name == "resources.arsc"
