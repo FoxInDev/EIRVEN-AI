@@ -32,6 +32,8 @@ def include(path: Path) -> bool:
         return False
     if rel.parts and rel.parts[0] in {"data", "workspace"} and path.name != ".gitkeep":
         return False
+    if rel.parts and rel.parts[0] in {"video", "video_archive", "video_results"}:
+        return path.name in {".gitkeep", "README.txt"} and path.is_file()
     return path.is_file()
 
 
@@ -45,7 +47,7 @@ def sha256(path: Path) -> str:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Build a clean EIRVEN Windows release archive")
-    parser.add_argument("--version", default="v1.6.1-r29-BAYA-FAST-LISTENING")
+    parser.add_argument("--version", default="v1.7.3-r37-MOBILE-PHOTO-STUDIO")
     parser.add_argument("--output", default=str(ROOT / "release"))
     args = parser.parse_args()
 
@@ -61,7 +63,7 @@ def main() -> None:
             if not include(path):
                 continue
             rel = path.relative_to(ROOT).as_posix()
-            zf.write(path, f"EIRVEN/{rel}")
+            zf.write(path, f"EIRVEN-AI-main/{rel}")
 
     checksum = sha256(archive)
     sums = out / "SHA256SUMS.txt"

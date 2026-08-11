@@ -1,0 +1,125 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,viewport-fit=cover">
+  <meta name="theme-color" content="#070914">
+  <meta name="color-scheme" content="dark">
+  <title>Эрви</title>
+  <link rel="stylesheet" href="styles.css">
+  <style>.send-button.stopping{border:1px solid rgba(255,126,163,.36);background:rgba(255,83,126,.12);color:#ffb2c5}</style>
+
+<script>
+  // Nitron Multi-Page Support
+  document.addEventListener('click', (e) => {
+    const a = e.target.closest('a');
+    if (a && a.href && (a.origin === window.location.origin || !a.href.startsWith('http'))) {
+      e.preventDefault();
+      window.location.href = a.href;
+    }
+  });
+</script>
+</head>
+<body>
+  <div class="ambient" aria-hidden="true"><i></i><b></b><em></em></div>
+
+  <section class="pairing-screen" id="pairing-screen">
+    <div class="pairing-card">
+      <div class="mini-orb" aria-hidden="true"><span class="orb-aura"></span><span class="orb-core"></span><span class="orb-ring ring-one"></span><span class="orb-ring ring-two"></span><span class="orb-face"><span class="gem-eye eye-left"><i></i><b></b></span><span class="gem-eye eye-right"><i></i><b></b></span><span class="orb-mouth"></span><span class="orb-cheek cheek-left"></span><span class="orb-cheek cheek-right"></span></span></div>
+      <p class="eyebrow">EIRVEN MOBILE</p>
+      <h1>Подключение к Эрви</h1>
+      <p class="lead">Модели, память, голос и управление остаются на твоём компьютере. Телефон становится удобным пультом с микрофоном.</p>
+      <div class="steps">
+        <p><span>1</span> Запусти EIRVEN на компьютере.</p>
+        <p><span>2</span> Открой там «Настройки → Телефон».</p>
+        <p><span>3</span> Убедись, что проверка Wi‑Fi и Windows Firewall там зелёная.</p>
+      </div>
+      <label>Адрес компьютера
+        <input id="server-input" inputmode="url" autocomplete="url" autocapitalize="off" spellcheck="false" placeholder="Например, 192.168.1.25:7860">
+      </label>
+      <label>Код подключения
+        <input id="token-input" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="XXXXX-XXXXX-XXXXX-XXXXX">
+      </label>
+      <button class="primary wide" id="connect-button">Подключиться</button>
+      <p class="form-status" id="pairing-status">Код виден только в EIRVEN на этом компьютере.</p>
+    </div>
+  </section>
+
+  <div class="app-shell" id="app-shell" hidden>
+    <header class="topbar">
+      <div>
+        <span class="eyebrow">EIRVEN MOBILE</span>
+        <h1 id="assistant-title">Эрви</h1>
+      </div>
+      <button class="connection-chip" id="connection-chip" aria-label="Настройки подключения"><i></i><span>Компьютер рядом</span></button>
+    </header>
+
+    <main>
+      <section class="screen active" data-screen="chat">
+        <div class="chat-scroll" id="messages" aria-live="polite"></div>
+        <div class="voice-dock">
+          <p id="voice-state">Нажми сферу и говори</p>
+          <button class="stop-handsfree" id="stop-handsfree" hidden>Остановить непрерывный режим</button>
+          <button class="voice-orb" id="voice-orb" aria-label="Начать голосовую команду">
+            <span class="orb-aura"></span><span class="orb-core"></span><span class="orb-ring ring-one"></span><span class="orb-ring ring-two"></span><span class="orb-face"><span class="gem-eye eye-left"><i></i><b></b></span><span class="gem-eye eye-right"><i></i><b></b></span><span class="orb-mouth"></span><span class="orb-cheek cheek-left"></span><span class="orb-cheek cheek-right"></span></span><i></i><b></b><em></em>
+          </button>
+        </div>
+        <form class="composer" id="composer">
+          <button type="button" class="round-button" id="attach-button" aria-label="Прикрепить документ">＋</button>
+          <textarea id="message-input" rows="1" maxlength="12000" placeholder="Напиши Эрви…"></textarea>
+          <button type="submit" class="send-button" id="send-button" aria-label="Отправить">➤</button>
+        </form>
+        <div class="attachment-strip" id="attachment-strip" hidden></div>
+      </section>
+
+      <section class="screen page" data-screen="files">
+        <div class="page-title"><span class="eyebrow">FILES & VIDEO</span><h2>Файлы</h2><p>Документы прикрепляются к следующей команде. Видео попадают прямо в папку <code>video</code> на компьютере и автоматически получают номера.</p></div>
+        <button class="upload-card" id="upload-video-button"><span class="upload-icon">▶</span><div><b>Загрузить видео</b><small>Можно выбрать несколько файлов разных форматов</small></div><i>＋</i></button>
+        <button class="upload-card" id="upload-document-button"><span class="upload-icon">≡</span><div><b>Прикрепить документ</b><small>Текст, PDF, код, таблица и другие файлы до 100 МБ</small></div><i>＋</i></button>
+        <div class="guide-card">
+          <b>Как попросить монтаж</b>
+          <p>После загрузки скажи, например: «У первого убери первые 5 секунд и склей все видео» или «Сделай вертикальное 9:16 и улучши качество».</p>
+          <small>Если команда допускает несколько вариантов, Эрви сначала задаст уточняющий вопрос.</small>
+        </div>
+        <div class="upload-list" id="upload-list"></div>
+      </section>
+
+      <section class="screen page" data-screen="tasks">
+        <div class="page-title"><span class="eyebrow">BACKGROUND WORK</span><h2>Задачи</h2><p>Монтаж, работа на компьютере и другие долгие действия продолжаются на ПК.</p></div>
+        <div class="task-list" id="task-list"><div class="empty-card">Загружаю задачи…</div></div>
+      </section>
+
+      <section class="screen page" data-screen="settings">
+        <div class="page-title"><span class="eyebrow">MOBILE SETTINGS</span><h2>Настройки</h2><p>Эти параметры относятся только к приложению на телефоне.</p></div>
+        <div class="settings-card">
+          <div class="setting-row"><div><b>Озвучивать ответы</b><small>Тот же голос, который настроен на компьютере</small></div><label class="switch"><input id="speak-answers" type="checkbox"><span></span></label></div>
+          <div class="setting-row"><div><b>Непрерывный режим</b><small>После ответа снова слушать, пока приложение открыто</small></div><label class="switch"><input id="handsfree-mode" type="checkbox"><span></span></label></div>
+          <div class="setting-row"><div><b>Адрес компьютера</b><small id="connected-address">—</small></div><span class="live-pill">LAN</span></div>
+        </div>
+        <div class="settings-card model-card">
+          <h3>Те же модели</h3>
+          <div id="model-list"><p>Получаю конфигурацию с компьютера…</p></div>
+        </div>
+        <button class="secondary wide" id="change-connection">Изменить подключение</button>
+        <button class="danger wide" id="forget-connection">Забыть адрес и код</button>
+        <p class="version-copy">EIRVEN Mobile 1.9.4 · verified install r37 · локальное ядро на ПК</p>
+      </section>
+    </main>
+
+    <nav class="bottom-nav" aria-label="Основная навигация">
+      <button class="active" data-nav="chat"><span>◉</span><small>Эрви</small></button>
+      <button data-nav="files"><span>＋</span><small>Файлы</small></button>
+      <button data-nav="tasks"><span>✓</span><small>Задачи</small></button>
+      <button data-nav="settings"><span>⚙</span><small>Настройки</small></button>
+    </nav>
+  </div>
+
+  <input id="document-input" type="file" multiple hidden>
+  <input id="video-input" type="file" accept="video/*,.mkv,.mov,.avi,.webm,.m4v,.wmv,.mpeg,.mpg,.mts,.m2ts,.3gp,.flv,.ts,.vob,.ogv,.asf,.rm,.rmvb,.divx,.f4v,.hevc,.h264,.av1" multiple hidden>
+  <input id="audio-fallback" type="file" accept="audio/*" capture hidden>
+  <audio id="voice-player" preload="none"></audio>
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+  <script src="mobile.js"></script>
+</body>
+</html>

@@ -19,6 +19,13 @@ data/*
 !data/.gitkeep
 workspace/*
 !workspace/.gitkeep
+video/*
+!video/.gitkeep
+!video/README.txt
+video_archive/*
+!video_archive/.gitkeep
+video_results/*
+!video_results/.gitkeep
 
 # Models and generated media
 models/

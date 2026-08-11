@@ -12,7 +12,7 @@ _POLITE_WORDS = {
 _RESUME_WORDS = {
     "готов", "готова", "готово", "сделал", "сделала", "сделано", "вошел", "вошла",
     "авторизовался", "авторизовалась", "авторизация", "продолжай", "продолжи",
-    "возобнови", "дальше", "далее", "можно", "давай", "закончил", "закончила",
+    "продолжить", "возобнови", "возобновить", "дальше", "далее", "можно", "давай", "закончил", "закончила",
     "подтвердил", "подтвердила", "ввел", "ввела", "введен", "введена", "код",
     "я", "уже", "теперь", "все", "всё", "можешь", "можете", "вход", "выполнен",
 }
@@ -48,7 +48,7 @@ def is_resume_confirmation(text: str) -> bool:
         compact.intersection({
             "готов", "готова", "готово", "сделал", "сделала", "сделано", "вошел",
             "вошла", "авторизовался", "авторизовалась", "продолжай", "продолжи",
-            "возобнови", "дальше", "далее", "закончил", "закончила", "подтвердил",
+            "продолжить", "возобнови", "возобновить", "дальше", "далее", "закончил", "закончила", "подтвердил",
             "подтвердила",
         })
         or ({"код", "ввел"} <= compact)
@@ -123,6 +123,28 @@ def is_phone_setup_request(text: str) -> bool:
     subject = bool(re.search(r"\b(?:телефон|телеграм|telegram|удаленн\w*\s+управлен)\w*\b", clean))
     action = bool(re.search(r"\b(?:настро|подключ|привяж|свяж|управл|команд)\w*\b", clean))
     return subject and action
+
+
+def is_mobile_app_setup_request(text: str) -> bool:
+    """Recognize the native Android client without confusing it with Telegram setup."""
+    clean = normalize_phrase(text)
+    if re.search(r"\b(?:телеграм|telegram|api\s*(?:id|hash)|чат\s*id)\b", clean):
+        return False
+    subject = bool(
+        re.search(
+            r"\b(?:телефон\w*|андроид\w*|android|apk|мобильн\w*\s+приложени\w*|"
+            r"приложени\w*\s+(?:на|для)\s+телефон\w*)\b",
+            clean,
+        )
+    )
+    connection = bool(
+        re.search(
+            r"\b(?:подключ|настро|свяж|привяж|код\w*\s+подключени|"
+            r"адрес\w*\s+компьютер|wifi|wi\s*fi|вай\s*фай|установ)\w*\b",
+            clean,
+        )
+    )
+    return subject and connection
 
 
 def is_chat_pairing_request(text: str) -> bool:

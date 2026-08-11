@@ -1,8 +1,8 @@
 {
   "product": "EIRVEN AI",
-  "version": "1.6.1",
-  "build": "r29-baya-fast-listening",
-  "release_date": "2026-08-10",
+  "version": "1.7.3",
+  "build": "r37-mobile-photo-studio",
+  "release_date": "2026-08-11",
   "python": ">=3.11,<3.14",
   "platform": "Windows 10/11",
   "tests_included": true

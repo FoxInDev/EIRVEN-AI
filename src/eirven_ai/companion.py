@@ -153,11 +153,7 @@ class DesktopCompanion:
     def _run(self) -> None:
         try:
             import tkinter as tk
-<<<<<<< HEAD
-            from PIL import Image, ImageDraw, ImageFilter, ImageTk
-=======
             from PIL import Image, ImageTk
->>>>>>> b48a166 (fix: repair mini orb, autostart and Telegram sending)
         except Exception:
             return
 
@@ -184,39 +180,10 @@ class DesktopCompanion:
         root.geometry(f"{win_w}x{win_h}+{anchor['x']}+{anchor['y']}")
 
         texture = None
-<<<<<<< HEAD
-        glow_idle = None
-        glow_active = None
-=======
->>>>>>> b48a166 (fix: repair mini orb, autostart and Telegram sending)
         try:
             image_path = Path(__file__).resolve().parent / "web" / "eirven-orb.png"
             image = Image.open(image_path).convert("RGBA").resize((sphere_size, sphere_size), Image.LANCZOS)
             texture = ImageTk.PhotoImage(image)
-<<<<<<< HEAD
-
-            def make_glow(strength: float):
-                size = int(round(sphere_size * 1.92))
-                layers = Image.new("RGBA", (size, size), (0, 0, 0, 0))
-                inset = int(size * .23)
-                specs = (
-                    ((73, 225, 255, int(88 * strength)), (-.025, -.018), .135),
-                    ((119, 79, 255, int(82 * strength)), (.025, .018), .165),
-                    ((255, 83, 214, int(55 * strength)), (.045, -.005), .19),
-                )
-                for color, offset, blur_ratio in specs:
-                    layer = Image.new("RGBA", (size, size), (0, 0, 0, 0))
-                    draw = ImageDraw.Draw(layer)
-                    dx, dy = int(size * offset[0]), int(size * offset[1])
-                    draw.ellipse((inset + dx, inset + dy, size - inset + dx, size - inset + dy), fill=color)
-                    layer = layer.filter(ImageFilter.GaussianBlur(max(4, int(size * blur_ratio))))
-                    layers = Image.alpha_composite(layers, layer)
-                return ImageTk.PhotoImage(layers)
-
-            glow_idle = make_glow(.72)
-            glow_active = make_glow(1.25)
-=======
->>>>>>> b48a166 (fix: repair mini orb, autostart and Telegram sending)
         except Exception:
             texture = None
 
@@ -351,15 +318,9 @@ class DesktopCompanion:
                 dy = int(round(math.cos(phase * .13) * 3))
                 root.geometry(f"+{anchor['x'] + dx}+{anchor['y'] + dy}")
 
-<<<<<<< HEAD
-            if glow_idle is not None:
-                canvas.create_image(cx, cy, image=(glow_active if active and glow_active is not None else glow_idle))
-
-=======
             # Keep the desktop sprite truly background-free.  A blurred, partially
             # transparent halo is composited against Tk's chroma-key colour on Windows
             # and becomes the large dark disk that used to sit behind the mini sphere.
->>>>>>> b48a166 (fix: repair mini orb, autostart and Telegram sending)
             if texture is not None:
                 canvas.create_image(cx, cy, image=texture)
             else:

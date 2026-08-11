@@ -1116,7 +1116,9 @@ class NativeVoiceDaemon:
 
     def _stream_chat_to_voice(self, query: str, emotion: str, turn_id: int) -> tuple[str,str]:
         """Generate and synthesize concurrently; newest owner turn still preempts both."""
-        speech_q: queue.Queue[str|None]=queue.Queue(maxsize=16)
+        # Do not drop the end of a long answer merely because generation is faster than
+        # Baya. A new owner turn still invalidates the turn id and stops the speaker.
+        speech_q: queue.Queue[str|None]=queue.Queue()
         answer=''; cid=self._conversation_id or ''
         def speaker() -> None:
             while self._is_current_turn(turn_id) and not self._stop.is_set():
@@ -1132,6 +1134,7 @@ class NativeVoiceDaemon:
         thread=threading.Thread(target=speaker,daemon=True,name=f'eirven-voice-stream-{turn_id}')
         thread.start()
         pending=''
+        generated=''
         self._generation_active.set()
         try:
             for event in self.services.chat.stream_events(query,cid or None,mode='Друг'):
@@ -1140,25 +1143,41 @@ class NativeVoiceDaemon:
                 elif event.get('type')=='token':
                     full=str(event.get('full') or '')
                     delta=str(event.get('content') or '')
-                    answer=full or (answer+delta)
-                    pending += delta
+                    if full:
+                        if full.startswith(generated):
+                            speech_delta=full[len(generated):]
+                        elif not generated:
+                            speech_delta=full
+                        else:
+                            speech_delta=delta
+                        generated=full
+                    else:
+                        speech_delta=delta
+                        generated += delta
+                    answer=generated
+                    pending += speech_delta
                     ready,pending=self._pop_speakable(pending)
                     for part in ready:
-                        try: speech_q.put(part,timeout=.2)
-                        except queue.Full: break
+                        speech_q.put(part)
                 elif event.get('type')=='done':
-                    answer=str(event.get('answer') or answer)
+                    final_answer=str(event.get('answer') or answer)
+                    # Some streaming providers place the final suffix only in ``done``.
+                    # Queue it before the forced flush so visible and spoken text match.
+                    if final_answer.startswith(generated):
+                        pending += final_answer[len(generated):]
+                    elif final_answer and not generated:
+                        pending += final_answer
+                    generated=final_answer or generated
+                    answer=generated
                 elif event.get('type')=='error' and not answer:
                     answer=str(event.get('message') or '')
             ready,pending=self._pop_speakable(pending,force=True)
             for part in ready:
                 if self._is_current_turn(turn_id):
-                    try: speech_q.put(part,timeout=.2)
-                    except queue.Full: break
+                    speech_q.put(part)
         finally:
             self._generation_active.clear()
-            try: speech_q.put(None,timeout=.2)
-            except queue.Full: pass
+            speech_q.put(None)
             thread.join(timeout=35.0)
         return answer,cid
 
@@ -1229,12 +1248,47 @@ class NativeVoiceDaemon:
         return np.stack(channels, axis=1).astype(np.float32)
 
     @staticmethod
+    def _synthesis_chunk(text: str) -> str:
+        """Give the speech engine a closing prosody mark without changing visible text."""
+        value = str(text or "").strip()
+        return value if not value or re.search(r"[.!?…,:;]$", value) else f"{value}."
+
+    @staticmethod
+    def _append_playback_tail(data: Any, sample_rate: int, channels: int, seconds: float = .14):
+        """Append a silent device-flush tail so Windows does not clip the final phoneme."""
+        import numpy as np  # type: ignore
+        array = np.asarray(data, dtype=np.float32)
+        tail = np.zeros(
+            (max(1, int(int(sample_rate) * float(seconds))), max(1, int(channels))),
+            dtype=np.float32,
+        )
+        return np.concatenate((array, tail), axis=0)
+
+    @staticmethod
     def _speech_chunks(text: str, limit: int = 220) -> list[str]:
         """Split long replies so the first audible sentence starts immediately."""
         clean = re.sub(r"\s+", " ", text).strip()
         if not clean:
             return []
-        parts = re.split(r"(?<=[.!?…])\s+|(?<=[,;:])\s+(?=.{70,})", clean)
+        raw_parts = re.split(r"(?<=[.!?…])\s+|(?<=[,;:])\s+(?=.{70,})", clean)
+        parts: list[str] = []
+        for raw in raw_parts:
+            tail = raw.strip()
+            while len(tail) > limit:
+                window = tail[: limit + 1]
+                cut = max(
+                    window.rfind(". "), window.rfind("! "), window.rfind("? "),
+                    window.rfind(", "), window.rfind("; "), window.rfind(": "),
+                    window.rfind(" "),
+                )
+                if cut < max(36, limit // 2):
+                    cut = limit
+                part = tail[:cut].strip()
+                if part:
+                    parts.append(part)
+                tail = tail[cut:].strip()
+            if tail:
+                parts.append(tail)
         chunks: list[str] = []
         current = ""
         for part in parts:
@@ -1283,7 +1337,8 @@ class NativeVoiceDaemon:
                     # Synthesize only the next semantic chunk. This cuts time-to-first-audio
                     # substantially for long answers and keeps interruption responsive.
                     synth_started = time.monotonic()
-                    path = Path(self.services.voice.synthesize(chunk, mode=mode))
+                    synthesis_text = self._synthesis_chunk(chunk)
+                    path = Path(self.services.voice.synthesize(synthesis_text, mode=mode))
                     synth_ms = (time.monotonic() - synth_started) * 1000
                     try:
                         engine = str(self.services.voice.status().get("last_tts_engine") or "")
@@ -1313,6 +1368,10 @@ class NativeVoiceDaemon:
                         data = np.repeat(data, 2, axis=1)
                     elif data.shape[1] > output_channels:
                         data = data[:, :output_channels]
+
+                    # Keep the Windows output device alive after the waveform. Without
+                    # this flush tail, some drivers clip the final phoneme on close.
+                    data = self._append_playback_tail(data, target_rate, output_channels)
 
                     self._speaking_since = time.monotonic()
                     self._last_spoken_text = self._normalize(chunk)

@@ -99,6 +99,7 @@ class CapabilityRegistry:
                 "repair_mode": True,
                 "developer_mode": True,
                 "proactive_observer": True,
+                "video_editing": bool(getattr(self.services, "video", None) and self.services.video.status().get("ffmpeg_ready")),
             },
         }
         self._cache = result

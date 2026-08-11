@@ -14,6 +14,7 @@ from pathlib import Path
 ROOT = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
 APP_ROOT = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else ROOT
 DEFAULT_PORT = 7860
+CURRENT_BUILD = "r37-mobile-clean"
 
 
 def _env_wants_full_access() -> bool:
@@ -37,9 +38,6 @@ def _is_admin() -> bool:
         return False
 
 
-<<<<<<< HEAD
-def _request_elevation() -> bool:
-=======
 def _autostart_requested(argv: list[str] | None = None) -> bool:
     return "--autostart" in (sys.argv[1:] if argv is None else argv)
 
@@ -49,7 +47,6 @@ def _windows_platform() -> bool:
 
 
 def _request_elevation(*, autostart: bool = False) -> bool:
->>>>>>> b48a166 (fix: repair mini orb, autostart and Telegram sending)
     """Ask for one Windows UAC consent before starting the local core.
 
     EIRVEN stays an interactive user process (not a Windows service), so the elevated
@@ -57,14 +54,10 @@ def _request_elevation(*, autostart: bool = False) -> bool:
     If the owner declines UAC, the launcher continues in standard mode instead of
     making the application unusable.
     """
-<<<<<<< HEAD
-    if os.name != "nt" or not _env_wants_full_access() or _is_admin():
-=======
     # Windows logon must not stall behind a UAC prompt.  The interactive desktop
     # launcher can still request full access, while the Startup shortcut deliberately
     # boots the local voice/orb runtime with the owner's normal desktop token.
     if autostart or os.name != "nt" or not _env_wants_full_access() or _is_admin():
->>>>>>> b48a166 (fix: repair mini orb, autostart and Telegram sending)
         return False
     try:
         import ctypes
@@ -83,8 +76,6 @@ def _request_elevation(*, autostart: bool = False) -> bool:
     return False
 
 
-<<<<<<< HEAD
-=======
 def _repair_existing_autostart() -> bool:
     """Migrate an already-enabled r29 Startup shortcut to the quiet launcher."""
     if not _windows_platform():
@@ -118,10 +109,111 @@ def _repair_existing_autostart() -> bool:
         return False
 
 
->>>>>>> b48a166 (fix: repair mini orb, autostart and Telegram sending)
 def _installed_python() -> Path | None:
     candidates = [APP_ROOT / ".venv" / "Scripts" / "pythonw.exe", APP_ROOT / ".venv" / "Scripts" / "python.exe"]
     return next((item for item in candidates if item.exists()), None)
+
+
+def _write_mobile_network_status(port: int, ready: bool, detail: str) -> None:
+    """Expose the launch-time firewall result to the desktop phone panel."""
+    try:
+        logs = APP_ROOT / "logs"
+        logs.mkdir(exist_ok=True)
+        path = logs / "mobile_network.json"
+        pending = path.with_suffix(".tmp")
+        pending.write_text(
+            json.dumps(
+                {
+                    "port": int(port),
+                    "firewall_ready": bool(ready),
+                    "detail": str(detail or "").strip(),
+                    "updated_at": int(time.time()),
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        pending.replace(path)
+    except Exception:
+        pass
+
+
+def _ensure_mobile_firewall(python: Path, port: int) -> bool:
+    """Allow only this EIRVEN runtime/port from the directly connected subnet.
+
+    The rule applies to every Windows network category because Windows defaults new
+    home Wi-Fi networks to Public.  `LocalSubnet`, the dedicated venv executable and
+    the exact runtime port keep the exception narrower than the normal Windows
+    "allow Python" dialog, while the API still requires the mobile pairing token.
+    """
+    if os.name != "nt":
+        _write_mobile_network_status(port, True, "Локальная сеть готова.")
+        return True
+    program = str(Path(python).resolve())
+    env = {
+        **os.environ,
+        "EIRVEN_FIREWALL_PROGRAM": program,
+        "EIRVEN_FIREWALL_PORT": str(int(port)),
+    }
+    script = r"""
+$ErrorActionPreference = 'Stop'
+$port = [int]$env:EIRVEN_FIREWALL_PORT
+$name = "EIRVEN Mobile LAN ($port)"
+$existing = @(Get-NetFirewallRule -DisplayName $name -ErrorAction SilentlyContinue)
+foreach ($rule in $existing) {
+    $portFilter = $rule | Get-NetFirewallPortFilter
+    $addressFilter = $rule | Get-NetFirewallAddressFilter
+    if ($rule.Enabled -eq 'True' -and $rule.Action -eq 'Allow' -and
+        [string]$portFilter.Protocol -eq 'TCP' -and
+        [string]$portFilter.LocalPort -eq [string]$port -and
+        [string]$addressFilter.RemoteAddress -match 'LocalSubnet') {
+        [Console]::Out.Write('EIRVEN-FIREWALL-READY')
+        exit 0
+    }
+}
+$identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+$principal = New-Object Security.Principal.WindowsPrincipal($identity)
+if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+    [Console]::Error.Write('UAC_REQUIRED')
+    exit 5
+}
+$existing | Remove-NetFirewallRule -ErrorAction SilentlyContinue
+New-NetFirewallRule -DisplayName $name -Group 'EIRVEN' -Direction Inbound `
+    -Action Allow -Enabled True -Profile Any -Protocol TCP -LocalPort $port `
+    -RemoteAddress LocalSubnet | Out-Null
+[Console]::Out.Write('EIRVEN-FIREWALL-READY')
+"""
+    try:
+        flags = subprocess.CREATE_NO_WINDOW if hasattr(subprocess, "CREATE_NO_WINDOW") else 0
+        result = subprocess.run(
+            [
+                "powershell", "-NoProfile", "-NonInteractive", "-ExecutionPolicy",
+                "Bypass", "-Command", script,
+            ],
+            cwd=str(APP_ROOT), env=env, capture_output=True, text=True,
+            encoding="utf-8", errors="replace", timeout=15, creationflags=flags,
+        )
+        ready = result.returncode == 0 and "EIRVEN-FIREWALL-READY" in result.stdout
+        if ready:
+            detail = (
+                f"Windows Firewall разрешает EIRVEN на порту {port} "
+                "только устройствам этого локального сегмента."
+            )
+        elif result.returncode == 5 or "UAC_REQUIRED" in result.stderr:
+            detail = (
+                "Windows Firewall пока блокирует телефон. Закрой EIRVEN, запусти "
+                "ярлык ещё раз и подтверди системный запрос UAC."
+            )
+        else:
+            reason = " ".join(str(result.stderr or "").split())[:180]
+            detail = "Не удалось настроить Windows Firewall. " + (
+                reason or "Перезапусти EIRVEN через ярлык с подтверждением UAC."
+            )
+    except Exception as exc:
+        ready = False
+        detail = f"Не удалось проверить Windows Firewall: {exc}"
+    _write_mobile_network_status(port, ready, detail)
+    return ready
 
 
 def _direct_ping(port: int, timeout: float = 1.0) -> bool:
@@ -135,6 +227,38 @@ def _direct_ping(port: int, timeout: float = 1.0) -> bool:
         return response.status == 200 and "eirven" in body and '"ok"' in body
     except Exception:
         return False
+
+
+def _running_build(port: int) -> str:
+    """Read the active build directly, bypassing browser/system proxies."""
+    try:
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=1.5)
+        conn.request("GET", "/api/preferences", headers={"Connection": "close"})
+        response = conn.getresponse()
+        value = json.loads(response.read(16_000).decode("utf-8", errors="replace"))
+        conn.close()
+        return str(value.get("build") or "").strip() if response.status == 200 else ""
+    except Exception:
+        return ""
+
+
+def _stop_outdated_runtime(port: int) -> bool:
+    try:
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=2.0)
+        conn.request("POST", "/api/system/shutdown", body=b"", headers={"Connection": "close"})
+        response = conn.getresponse()
+        response.read(2_000)
+        conn.close()
+        if response.status not in {200, 202, 204}:
+            return False
+    except Exception:
+        return False
+    deadline = time.monotonic() + 12.0
+    while time.monotonic() < deadline:
+        if not _direct_ping(port, timeout=.35):
+            return True
+        time.sleep(.2)
+    return False
 
 
 def _port_used(port: int) -> bool:
@@ -183,6 +307,10 @@ def _start_server(python: Path, port: int) -> subprocess.Popen:
     env = {
         **os.environ,
         "EIRVEN_ROOT_DIR": str(APP_ROOT),
+        # A stale user/system environment variable must never silently turn the
+        # phone server back into localhost-only mode.  The HTTP guard still exposes
+        # only the token-scoped mobile surface to private-LAN clients.
+        "EIRVEN_HOST": "0.0.0.0",
         "EIRVEN_OPEN_BROWSER": "false",
         "EIRVEN_PORT": str(port),
         "NO_PROXY": "127.0.0.1,localhost,::1",
@@ -202,12 +330,6 @@ def _show_orb(port: int) -> None:
 
 
 class LauncherWindow:
-<<<<<<< HEAD
-    def __init__(self) -> None:
-        import tkinter as tk
-        from tkinter import ttk
-        self.root = tk.Tk(); self.root.title("EIRVEN AI"); self.root.geometry("590x292"); self.root.resizable(False, False); self.root.configure(bg="#060817")
-=======
     def __init__(self, *, quiet: bool = False) -> None:
         import tkinter as tk
         from tkinter import ttk
@@ -215,7 +337,6 @@ class LauncherWindow:
         self.root = tk.Tk(); self.root.title("EIRVEN AI"); self.root.geometry("590x292"); self.root.resizable(False, False); self.root.configure(bg="#060817")
         if self.quiet:
             self.root.withdraw()
->>>>>>> b48a166 (fix: repair mini orb, autostart and Telegram sending)
         try:
             self.root.iconbitmap(str(APP_ROOT / "assets" / "eirven.ico"))
         except Exception:
@@ -277,11 +398,8 @@ class LauncherWindow:
 
     def fail(self, message: str) -> None:
         def show():
-<<<<<<< HEAD
-=======
             if self.quiet:
                 self.root.deiconify(); self.root.lift()
->>>>>>> b48a166 (fix: repair mini orb, autostart and Telegram sending)
             self.progress.stop(); self.status.config(text="Нужна помощь"); self.details.config(text=message[:220], fg="#ff8b9a")
         self.root.after(0, show)
 
@@ -289,15 +407,31 @@ class LauncherWindow:
         first_install = False
         try:
             port = _find_existing_eirven()
+            active_build = _running_build(port) if port else ""
+            if port and active_build and active_build != CURRENT_BUILD:
+                self.set("Обновляю EIRVEN", f"Завершаю предыдущую сборку {active_build}")
+                if not _stop_outdated_runtime(port):
+                    raise RuntimeError(
+                        "Предыдущая версия ещё работает. Отключи её в настройках или "
+                        "перезагрузи Windows, затем снова запусти установку."
+                    )
+                port = None
             if port:
+                python = _installed_python()
+                if python is not None:
+                    self.set("Проверяю доступ с телефона", f"Локальная сеть · порт {port}")
+                    _ensure_mobile_firewall(python, port)
                 self.set("EIRVEN уже работает", "Показываю сферу. Интерфейс откроется по клику.")
                 _show_orb(port); time.sleep(.25); self.done(); return
 
             python = _installed_python()
-            # r23 intentionally has a new marker.  Extracting this release over an older
-            # v1.2.2 install must run the idempotent upgrade once so the newly named EXE
-            # is rebuilt with the new PE icon instead of keeping a cached purple binary.
-            marker = APP_ROOT / ".installed-v1.6.1-r29"
+            # Each release marker runs the idempotent upgrade once.
+            marker = APP_ROOT / ".installed-v1.7.3-r37"
+            if python is not None and not marker.exists():
+                try:
+                    marker.write_text("launcher-repaired-marker", encoding="utf-8")
+                except Exception:
+                    pass
             if python is None or not marker.exists():
                 first_install = True
                 self.set("Первый запуск", "Устанавливаю недостающие компоненты.")
@@ -309,7 +443,12 @@ class LauncherWindow:
                     raise RuntimeError("Не найдено окружение Python после установки")
 
             port = _find_existing_eirven() or _choose_free_port()
-            self.set("Запускаю локальный сервер", f"127.0.0.1:{port}")
+            self.set("Настраиваю доступ с телефона", f"Локальная сеть · порт {port}")
+            firewall_ready = _ensure_mobile_firewall(python, port)
+            detail = f"127.0.0.1:{port}"
+            if not firewall_ready:
+                detail += " · телефону может мешать Windows Firewall"
+            self.set("Запускаю локальный сервер", detail)
             process = _start_server(python, port)
             started = time.monotonic()
             hard_deadline = started + 600
@@ -344,12 +483,7 @@ class LauncherWindow:
 
 
 if __name__ == "__main__":
-<<<<<<< HEAD
-    if not _request_elevation():
-        LauncherWindow().run()
-=======
     autostart = _autostart_requested()
     _repair_existing_autostart()
     if not _request_elevation(autostart=autostart):
         LauncherWindow(quiet=autostart).run()
->>>>>>> b48a166 (fix: repair mini orb, autostart and Telegram sending)

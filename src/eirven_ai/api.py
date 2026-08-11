@@ -1,25 +1,247 @@
 from __future__ import annotations
 
+import hashlib
+import ipaddress
 import json
 import mimetypes
 import os
 import re
 import secrets
+import socket
 import sys
 import time
 import threading
 import subprocess
+import uuid
 from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile, Request
 from fastapi.concurrency import run_in_threadpool
-from fastapi.responses import FileResponse, RedirectResponse, Response, StreamingResponse
+from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse, RedirectResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
 
 from .database import utc_now
 from .services import Services
 from .style import StyleDNA
+from .video import VIDEO_EXTENSIONS
+
+
+APP_VERSION = "1.7.3"
+APP_BUILD = "r37-mobile-clean"
+MOBILE_TOKEN_HEADER = "X-EIRVEN-Mobile-Token"
+MOBILE_UPLOAD_LIMIT = 20 * 1024 * 1024 * 1024
+
+_WIFI_INTERFACE_HINTS = (
+    "wi-fi", "wifi", "wireless", "wlan", "беспровод", "вай-фай",
+)
+_ETHERNET_INTERFACE_HINTS = (
+    "ethernet", "local area connection", "локальная сеть", "ethernet-сеть",
+)
+_VIRTUAL_INTERFACE_HINTS = (
+    "vethernet", "hyper-v", "hyperv", "wsl", "docker", "virtualbox",
+    "vmware", "tailscale", "zerotier", "hamachi", "openvpn", "wireguard",
+    "vpn", "loopback", "туннел", "virtual", "виртуаль",
+)
+
+
+def _is_local_client(host: str) -> bool:
+    value = str(host or "").strip().casefold()
+    if value in {"", "localhost", "testclient"}:
+        return True
+    try:
+        return ipaddress.ip_address(value).is_loopback
+    except ValueError:
+        return False
+
+
+def _is_private_client(host: str) -> bool:
+    try:
+        address = ipaddress.ip_address(str(host or "").strip())
+    except ValueError:
+        return False
+    return bool(address.is_private or address.is_link_local)
+
+
+def _mobile_path_allowed(path: str, method: str) -> bool:
+    value = str(path or "")
+    verb = str(method or "GET").upper()
+    exact = {
+        ("/api/mobile/status", "GET"),
+        ("/api/mobile/video", "POST"),
+        ("/api/conversations", "POST"),
+        ("/api/chat/stream", "POST"),
+        ("/api/voice/speak", "POST"),
+        ("/api/voice/transcribe", "POST"),
+        ("/api/uploads", "POST"),
+        ("/api/tasks", "GET"),
+    }
+    if (value, verb) in exact:
+        return True
+    patterns = (
+        (r"/api/conversations/[A-Za-z0-9_-]+", "GET"),
+        (r"/api/chat/[A-Za-z0-9_-]+/stop", "POST"),
+        (r"/api/tasks/[A-Za-z0-9_-]+/cancel", "POST"),
+    )
+    return any(verb == allowed and re.fullmatch(pattern, value) for pattern, allowed in patterns)
+
+
+def _mobile_bootstrap_path_allowed(path: str, method: str) -> bool:
+    """Allow a phone to fetch only the installer before it has a pairing token."""
+    value = str(path or "")
+    return value in {"/mobile/install", "/api/mobile/app.apk"} and str(method or "GET").upper() in {"GET", "HEAD"}
+
+
+def _format_mobile_token(token: str) -> str:
+    clean = re.sub(r"[^A-Z0-9]", "", str(token or "").upper())
+    return "-".join(clean[index:index + 5] for index in range(0, len(clean), 5))
+
+
+def _default_route_ipv4() -> str:
+    """Return the IPv4 selected by the OS routing table without sending traffic."""
+    try:
+        probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            probe.connect(("192.0.2.1", 9))
+            return str(probe.getsockname()[0])
+        finally:
+            probe.close()
+    except OSError:
+        return ""
+
+
+def _interface_kind(name: str) -> str:
+    value = str(name or "").casefold()
+    if any(hint in value for hint in _VIRTUAL_INTERFACE_HINTS):
+        return "virtual"
+    if any(hint in value for hint in _WIFI_INTERFACE_HINTS):
+        return "wifi"
+    if any(hint in value for hint in _ETHERNET_INTERFACE_HINTS):
+        return "ethernet"
+    return "network"
+
+
+def _lan_candidates(port: int) -> list[dict[str, Any]]:
+    """Rank reachable LAN IPv4 addresses, preferring a real Wi-Fi adapter.
+
+    Windows machines commonly expose WSL, Hyper-V, VPN and Docker addresses next
+    to the real Wi-Fi address.  Sorting raw private IPs made the QR code silently
+    choose one of those isolated adapters.  Interface-aware ranking keeps them as
+    a visible fallback but never prefers them over an active physical adapter.
+    """
+    route_ip = _default_route_ipv4()
+    found: dict[str, dict[str, Any]] = {}
+
+    def add(raw: str, interface: str, *, is_up: bool, source: str) -> None:
+        try:
+            value = ipaddress.ip_address(str(raw or "").strip())
+        except ValueError:
+            return
+        if (
+            value.version != 4
+            or not value.is_private
+            or value.is_loopback
+            or value.is_link_local
+            or value.is_unspecified
+            or value.is_multicast
+        ):
+            return
+        name = str(interface or "Локальная сеть").strip() or "Локальная сеть"
+        kind = _interface_kind(name)
+        score = 120 if is_up else 0
+        score += {"wifi": 240, "ethernet": 170, "network": 80, "virtual": -360}[kind]
+        if str(value) == route_ip:
+            score += 115
+        if str(value).startswith("192.168."):
+            score += 45
+        elif str(value).startswith("10."):
+            score += 25
+        else:
+            score += 10
+        candidate = {
+            "url": f"http://{value}:{int(port)}",
+            "ip": str(value),
+            "interface": name,
+            "kind": kind,
+            "source": source,
+            "score": score,
+        }
+        previous = found.get(str(value))
+        # Hostname/default-route fallbacks do not know which adapter owns an IP.
+        # Never let that generic label erase a real psutil adapter classification
+        # (especially the virtual/VPN warning) merely because routing added points.
+        if previous is not None and previous.get("source") == "adapter" and source != "adapter":
+            return
+        if previous is None or int(previous["score"]) < score:
+            found[str(value)] = candidate
+
+    try:
+        import psutil  # type: ignore
+
+        stats = psutil.net_if_stats()
+        for interface, entries in psutil.net_if_addrs().items():
+            state = stats.get(interface)
+            if state is not None and not state.isup:
+                continue
+            for entry in entries:
+                if entry.family == socket.AF_INET:
+                    add(entry.address, interface, is_up=True, source="adapter")
+    except Exception:
+        pass
+
+    try:
+        for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
+            add(str(info[4][0]), "Локальная сеть", is_up=True, source="hostname")
+    except OSError:
+        pass
+
+    if route_ip:
+        add(route_ip, "Системный маршрут", is_up=True, source="route")
+
+    ordered = sorted(
+        found.values(),
+        key=lambda item: (-int(item["score"]), ipaddress.ip_address(item["ip"])),
+    )
+    result: list[dict[str, Any]] = []
+    for index, item in enumerate(ordered):
+        public = {key: value for key, value in item.items() if key != "score"}
+        public["recommended"] = index == 0
+        public["warning"] = (
+            "Это виртуальный/VPN-адаптер; телефон обычно не видит его."
+            if item["kind"] == "virtual" else ""
+        )
+        result.append(public)
+    return result
+
+
+def _lan_addresses(port: int) -> list[str]:
+    return [str(item["url"]) for item in _lan_candidates(port)]
+
+
+def _mobile_network_runtime_status(root_dir: Path, port: int) -> dict[str, Any]:
+    """Read the launcher's last firewall check for the current runtime port."""
+    if os.name != "nt":
+        return {
+            "firewall_ready": True,
+            "detail": "Проверка Windows Firewall нужна только в Windows.",
+        }
+    path = root_dir / "logs" / "mobile_network.json"
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+        if int(value.get("port", 0)) != int(port):
+            raise ValueError("status belongs to another port")
+        return {
+            "firewall_ready": bool(value.get("firewall_ready")),
+            "detail": str(value.get("detail") or "").strip(),
+        }
+    except Exception:
+        return {
+            "firewall_ready": None,
+            "detail": (
+                "Windows ещё не подтвердила доступ из локальной сети. "
+                "Перезапусти EIRVEN через ярлык и подтверди системный запрос UAC."
+            ),
+        }
 
 
 class ChatRequest(BaseModel):
@@ -114,6 +336,13 @@ class PreferencesRequest(BaseModel):
     desktop_eyes_enabled: bool | None = None
     update_channel: str | None = None
     auto_update_check: bool | None = None
+    adult_photo_enabled: bool | None = None
+
+
+class AdultPhotoRequest(BaseModel):
+    prompt: str = Field(min_length=8, max_length=1600)
+    mode: str = "realistic"
+    aspect: str = "portrait"
 
 
 class CameraPointerRequest(BaseModel):
@@ -177,21 +406,81 @@ def _sse(data: dict[str, Any], event: str | None = None) -> bytes:
 def build_api(services: Services) -> FastAPI:
     app = FastAPI(
         title="EIRVEN AI Local API",
-        version="1.6.1",
+        version=APP_VERSION,
         description="Локальный voice-first персональный ИИ с очередью задач и управлением компьютером",
     )
     upload_dir = services.settings.data_dir / "uploads"
     upload_dir.mkdir(parents=True, exist_ok=True)
 
+    def mobile_token(*, regenerate: bool = False) -> str:
+        stored = "" if regenerate else str(
+            services.db.get_setting("mobile_access_token", "") or ""
+        )
+        clean = re.sub(r"[^A-Z0-9]", "", stored.upper())
+        if len(clean) < 20:
+            clean = secrets.token_hex(10).upper()
+            services.db.set_setting("mobile_access_token", clean)
+        return clean
+
+    def add_mobile_cors(response: Response, request: Request) -> Response:
+        if request.headers.get("origin", "").casefold() == "null":
+            response.headers["Access-Control-Allow-Origin"] = "null"
+            response.headers["Access-Control-Allow-Headers"] = (
+                f"Content-Type, {MOBILE_TOKEN_HEADER}"
+            )
+            response.headers["Access-Control-Allow-Methods"] = "GET, HEAD, POST, OPTIONS"
+            response.headers["Access-Control-Max-Age"] = "600"
+            response.headers["Vary"] = "Origin"
+        return response
+
     @app.middleware("http")
-    async def disable_stale_local_ui_cache(request: Request, call_next):
+    async def local_network_guard(request: Request, call_next):
+        path = request.url.path
+        method = request.method.upper()
+        client_host = request.client.host if request.client is not None else ""
+        local = _is_local_client(client_host)
+        mobile_method = request.headers.get("access-control-request-method", method)
+        mobile_allowed = _mobile_path_allowed(path, mobile_method)
+        mobile_bootstrap = _mobile_bootstrap_path_allowed(path, mobile_method)
+
+        # Desktop settings and the full API never leave this machine. A private-LAN
+        # phone receives only the small allowlisted surface and must present its token.
+        if not local:
+            if not _is_private_client(client_host):
+                return PlainTextResponse(
+                    "EIRVEN доступна только в частной локальной сети",
+                    status_code=403,
+                )
+            # A phone owner often types or reopens only the address shown under the QR.
+            # Send those harmless entry paths to the mobile checkpoint instead of a
+            # desktop-only error page.  The desktop UI itself remains inaccessible.
+            if method in {"GET", "HEAD"} and path in {"/", "/ui", "/ui/"}:
+                return RedirectResponse("/mobile/install", status_code=307)
+            if method == "OPTIONS" and (mobile_allowed or mobile_bootstrap):
+                return add_mobile_cors(Response(status_code=204), request)
+            if not mobile_allowed and not mobile_bootstrap:
+                return PlainTextResponse(
+                    "Этот раздел доступен только на компьютере",
+                    status_code=403,
+                )
+            if not mobile_bootstrap:
+                supplied = re.sub(
+                    r"[^A-Z0-9]", "", request.headers.get(MOBILE_TOKEN_HEADER, "").upper()
+                )
+                if not supplied or not secrets.compare_digest(supplied, mobile_token()):
+                    return add_mobile_cors(
+                        PlainTextResponse("Неверный код подключения", status_code=401), request
+                    )
+
         response = await call_next(request)
-        if request.url.path.startswith("/ui"):
+        if path.startswith("/ui"):
             # Every EIRVEN release is served from the same localhost URL. Browsers may
             # otherwise keep an old app.js and make a new backend look broken.
             response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
             response.headers["Pragma"] = "no-cache"
             response.headers["Expires"] = "0"
+        if mobile_allowed or mobile_bootstrap:
+            add_mobile_cors(response, request)
         return response
 
     def attachment_path(attachment_id: str) -> Path:
@@ -213,13 +502,162 @@ def build_api(services: Services) -> FastAPI:
     @app.get("/api/ping")
     def ping() -> dict[str, str]:
         # Lightweight startup probe: never calls Ollama, Telegram, voice or hardware.
-        return {"app": "eirven", "status": "ok", "version": "1.6.1"}
+        return {"app": "eirven", "status": "ok", "version": APP_VERSION}
+
+    def mobile_apk_path() -> Path | None:
+        configured = str(os.getenv("EIRVEN_MOBILE_APK", "") or "").strip()
+        configured_path = Path(configured).expanduser() if configured else None
+        if configured_path is not None and not configured_path.is_absolute():
+            configured_path = services.settings.root_dir / configured_path
+        candidates = [
+            configured_path,
+            services.settings.root_dir / "mobile_client" / "EIRVEN-Mobile.apk",
+            services.settings.root_dir / "EIRVEN-Mobile.apk",
+        ]
+        for candidate in candidates:
+            if candidate is None:
+                continue
+            try:
+                resolved = candidate.resolve()
+                if resolved.is_file() and resolved.stat().st_size >= 100_000:
+                    return resolved
+            except OSError:
+                continue
+        return None
+
+    def mobile_config_payload() -> dict[str, Any]:
+        candidates = _lan_candidates(services.settings.port)
+        addresses = [str(item["url"]) for item in candidates]
+        apk = mobile_apk_path()
+        preferred = addresses[0] if addresses else ""
+        network_status = _mobile_network_runtime_status(
+            services.settings.root_dir, services.settings.port
+        )
+        return {
+            "addresses": addresses,
+            "address_options": candidates,
+            "preferred_address": preferred,
+            "token": _format_mobile_token(mobile_token()),
+            "lan_enabled": not _is_local_client(services.settings.host),
+            **network_status,
+            "port": int(services.settings.port),
+            "apk_available": apk is not None,
+            "apk_filename": apk.name if apk is not None else "",
+            "apk_size_bytes": apk.stat().st_size if apk is not None else 0,
+            "apk_sha256": hashlib.sha256(apk.read_bytes()).hexdigest() if apk is not None else "",
+            "download_url": f"{preferred}/api/mobile/app.apk" if preferred and apk is not None else "",
+            "install_url": f"{preferred}/mobile/install" if preferred and apk is not None else "",
+        }
+
+    @app.get("/api/mobile/config")
+    def mobile_config() -> dict[str, Any]:
+        return mobile_config_payload()
+
+    @app.post("/api/mobile/token/regenerate")
+    def regenerate_mobile_token() -> dict[str, Any]:
+        mobile_token(regenerate=True)
+        return mobile_config_payload()
+
+    @app.api_route("/api/mobile/app.apk", methods=["GET", "HEAD"])
+    def mobile_apk_download() -> FileResponse:
+        apk = mobile_apk_path()
+        if apk is None:
+            raise HTTPException(status_code=404, detail="APK не включён в эту сборку EIRVEN")
+        return FileResponse(
+            apk,
+            media_type="application/vnd.android.package-archive",
+            filename="EIRVEN-Mobile-1.9.4.apk",
+            headers={"Cache-Control": "no-store, max-age=0"},
+        )
+
+    @app.api_route("/mobile/install", methods=["GET", "HEAD"], response_class=HTMLResponse)
+    def mobile_install_page() -> HTMLResponse:
+        """Human-readable LAN checkpoint before Android downloads the installer."""
+        apk = mobile_apk_path()
+        if apk is None:
+            return HTMLResponse(
+                "<!doctype html><meta charset='utf-8'><title>EIRVEN Mobile</title>"
+                "<h1>Связь с компьютером есть</h1><p>Но APK не включён в эту сборку EIRVEN.</p>",
+                status_code=404,
+                headers={"Cache-Control": "no-store, max-age=0"},
+            )
+        digest = hashlib.sha256(apk.read_bytes()).hexdigest()
+        body = f"""<!doctype html>
+<html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Установка EIRVEN Mobile</title><style>
+:root{{color-scheme:dark}}*{{box-sizing:border-box}}body{{margin:0;min-height:100vh;background:radial-gradient(circle at top,#13244a 0,#090d19 45%,#05070f 100%);color:#eef8ff;font:16px/1.55 system-ui,sans-serif}}main{{max-width:720px;margin:auto;padding:34px 18px 40px}}.card{{padding:26px;border:1px solid rgba(100,142,223,.22);border-radius:28px;background:linear-gradient(180deg,rgba(10,17,35,.92),rgba(7,12,24,.96));box-shadow:0 30px 90px rgba(0,0,0,.34)}}.hero{{display:grid;justify-items:center;text-align:center;gap:12px;margin-bottom:18px}}.ok{{margin:0;color:#dffcff;font-size:31px;letter-spacing:-.04em}}.lead{{margin:0;max-width:540px;color:#aebada}}.orb{{position:relative;width:108px;height:108px;border-radius:50%;filter:drop-shadow(0 0 28px rgba(96,184,255,.36))}}.orb .core{{position:absolute;inset:10%;border-radius:50%;background:radial-gradient(circle at 36% 27%,rgba(255,255,255,.88),rgba(113,240,255,.62) 10%,rgba(94,103,255,.82) 37%,rgba(222,74,235,.63) 66%,rgba(36,14,61,.44) 79%,transparent 82%)}}.orb .aura{{position:absolute;inset:-18%;border-radius:50%;background:radial-gradient(circle,rgba(76,223,255,.2),rgba(125,74,255,.14) 45%,transparent 71%);filter:blur(12px)}}.orb .ring{{position:absolute;border-radius:50%;border:1px solid rgba(135,230,255,.36)}}.orb .one{{inset:6%;animation:spin 7s linear infinite}}.orb .two{{inset:12%;border-color:rgba(255,126,226,.28);animation:spin 10s linear infinite reverse}}.face{{position:absolute;inset:0;z-index:3;pointer-events:none;filter:drop-shadow(0 0 10px rgba(107,221,255,.3))}}.eye{{position:absolute;top:41%;width:11%;height:13%;border-radius:48% 48% 55% 55%;background:radial-gradient(circle at 39% 31%,#fff 0 7%,#bffaff 8% 15%,#6f82ff 25%,#321e8e 52%,#100b3e 78%);border:1px solid rgba(217,251,255,.78);box-shadow:inset 0 -4px 8px rgba(6,8,48,.65),inset 0 2px 6px rgba(255,255,255,.42),0 0 8px #8befff,0 0 16px rgba(147,86,255,.58);overflow:hidden}}.eye:before{{content:"";position:absolute;width:34%;height:39%;left:35%;top:42%;border-radius:50%;background:radial-gradient(circle at 42% 35%,#d9ffff 0 10%,#20308c 17% 58%,#080728 64%);box-shadow:0 0 5px rgba(110,232,255,.82)}}.eye:after{{content:"";position:absolute;width:19%;height:16%;left:20%;top:18%;border-radius:50%;background:#fff;box-shadow:0 0 8px #c9fbff}}.eye.left{{left:32.7%;transform:rotate(-4deg)}}.eye.right{{right:32.7%;transform:rotate(4deg)}}.mouth{{position:absolute;left:50%;top:56%;width:8%;height:4px;transform:translateX(-50%);border-radius:4px 4px 50% 50%;border-bottom:2px solid rgba(224,250,255,.92);box-shadow:0 2px 9px rgba(114,230,255,.45)}}.cheek{{position:absolute;top:55%;width:7.5%;height:3%;border-radius:50%;background:radial-gradient(ellipse,rgba(255,113,220,.48),transparent 68%);filter:blur(2px);opacity:.42}}.cheek.left{{left:27%}}.cheek.right{{right:27%}}a.download{{display:block;margin:22px 0 12px;padding:16px 18px;border-radius:16px;background:linear-gradient(135deg,#59e4ff,#817bff 58%,#ef7bd1);color:#08111e;text-align:center;text-decoration:none;font-weight:800;box-shadow:0 16px 44px rgba(91,117,255,.3)}}.steps{{margin:18px 0 0;padding:0;list-style:none;display:grid;gap:12px}}.steps li{{display:grid;grid-template-columns:28px 1fr;gap:12px;align-items:flex-start;padding:12px 14px;border:1px solid rgba(100,142,223,.14);border-radius:18px;background:rgba(255,255,255,.03)}}.steps span{{display:grid;place-items:center;width:28px;height:28px;border-radius:50%;background:rgba(97,224,255,.14);color:#bff8ff;font-weight:700}}.why{{margin-top:18px;padding:14px 16px;border:1px solid rgba(100,142,223,.14);border-radius:18px;background:rgba(255,255,255,.03);color:#9aa9ca}}small{{display:block;margin-top:16px;color:#8ea1bf;overflow-wrap:anywhere}}code{{color:#bdefff}}@keyframes spin{{to{{transform:rotate(360deg)}}}}
+</style></head><body><main><div class="card"><div class="hero"><div class="orb" aria-hidden="true"><span class="aura"></span><span class="core"></span><span class="ring one"></span><span class="ring two"></span><span class="face"><span class="eye left"></span><span class="eye right"></span><span class="mouth"></span><span class="cheek left"></span><span class="cheek right"></span></span></div><h1 class="ok">Компьютер рядом</h1><p class="lead">Телефон уже видит EIRVEN в домашней сети. Осталось скачать приложение, установить его и ввести код подключения с компьютера.</p></div>
+<a class="download" href="/api/mobile/app.apk?build={APP_BUILD}&sha={digest[:12]}">Скачать EIRVEN Mobile 1.9.4</a>
+<ul class="steps"><li><span>1</span><div><b>Скачай APK</b><div>Нажми кнопку выше и дождись завершения загрузки.</div></div></li><li><span>2</span><div><b>Разреши установку, если Android спросит</b><div>Обычно нужно подтвердить установку приложений из этого браузера один раз.</div></div></li><li><span>3</span><div><b>Открой EIRVEN Mobile</b><div>В приложении введи адрес компьютера и код подключения из раздела «Телефон» на ПК.</div></div></li></ul>
+<div class="why"><b>Зачем этот экран:</b> он показывает, что связь с компьютером уже есть, и даёт правильный APK именно из этой локальной установки EIRVEN.</div>
+<small>EIRVEN {APP_VERSION} · {APP_BUILD}<br>SHA-256: <code>{digest}</code></small></div></main></body></html>"""
+        return HTMLResponse(body, headers={"Cache-Control": "no-store, max-age=0"})
+
+    @app.get("/api/mobile/status")
+    def mobile_status() -> dict[str, Any]:
+        identity = services.identity.get()
+        settings = services.settings
+        asr_model = (
+            settings.gigaam_model
+            if settings.asr_engine == "gigaam"
+            else settings.whisper_model
+        )
+        return {
+            "ok": True,
+            "version": APP_VERSION,
+            "assistant_name": identity.assistant_name,
+            "models": {
+                "chat": settings.model,
+                "fast": settings.fast_model,
+                "code": settings.code_model,
+                "vision": settings.vision_model,
+                "asr": asr_model,
+                "tts": (
+                    "Бая · Silero"
+                    if settings.tts_engine in {"auto", "silero"}
+                    else settings.tts_engine
+                ),
+            },
+        }
+
+    @app.post("/api/mobile/video")
+    async def mobile_video(file: UploadFile = File(...)) -> dict[str, Any]:
+        original = Path(file.filename or "video.mp4").name
+        suffix = Path(original).suffix.casefold()
+        if suffix not in VIDEO_EXTENSIONS:
+            raise HTTPException(
+                status_code=415, detail="Выбери видео в поддерживаемом формате"
+            )
+        safe_stem = re.sub(
+            r"[^0-9A-Za-zА-Яа-яЁё._ -]+", "_", Path(original).stem
+        ).strip(" ._")[:96] or "video"
+        inbox = Path(services.video.inbox)
+        inbox.mkdir(parents=True, exist_ok=True)
+        temporary = inbox / f".eirven-upload-{uuid.uuid4().hex}{suffix}"
+        target = inbox / f"{safe_stem}{suffix}"
+        if target.exists():
+            target = inbox / f"{safe_stem}-{uuid.uuid4().hex[:6]}{suffix}"
+        size = 0
+        try:
+            with temporary.open("wb") as output:
+                while chunk := await file.read(1024 * 1024):
+                    size += len(chunk)
+                    if size > MOBILE_UPLOAD_LIMIT:
+                        raise HTTPException(status_code=413, detail="Видео больше 20 ГБ")
+                    output.write(chunk)
+            temporary.replace(target)
+        except Exception:
+            temporary.unlink(missing_ok=True)
+            raise
+        finally:
+            await file.close()
+        return {"ok": True, "name": target.name, "size": size, "queued": True}
 
     @app.get("/api/health")
     def health() -> dict[str, Any]:
         return {
             "app": "ok",
-            "version": "1.6.1",
+            "version": APP_VERSION,
             "llm": services.gateway.health(),
             "hardware": services.hardware.to_dict(),
             "workspace": str(services.settings.workspace_dir),
@@ -234,8 +672,96 @@ def build_api(services: Services) -> FastAPI:
             "companion": services.companion.status(),
             "game_control": services.settings.enable_game_control,
             "creative": services.creative.health(),
+            "video": services.video.status(),
             "modes": services.modes.status() if services.modes is not None else {},
         }
+
+    @app.get("/api/adult-photo/status")
+    def adult_photo_status() -> dict[str, Any]:
+        enabled = bool(services.db.get_setting("adult_photo_enabled", False))
+        health = services.creative.health() if enabled else {
+            "ok": False,
+            "detail": "Раздел скрыт. Включи его в самом низу общих настроек.",
+        }
+        return {"enabled": enabled, "text_only": True, "fictional_adults_only": True, **health}
+
+    @app.post("/api/adult-photo/generate")
+    async def adult_photo_generate(request: AdultPhotoRequest) -> dict[str, Any]:
+        if not bool(services.db.get_setting("adult_photo_enabled", False)):
+            raise HTTPException(status_code=403, detail="Сначала включи раздел в общих настройках.")
+        try:
+            result = await run_in_threadpool(
+                services.creative.generate_adult_image,
+                request.prompt,
+                mode=request.mode,
+                aspect=request.aspect,
+            )
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        path = Path(str(result.get("path") or "")).resolve()
+        output_dir = services.creative.output_dir.resolve()
+        if not path.is_file() or output_dir not in path.parents:
+            raise HTTPException(status_code=500, detail="Генератор не сохранил готовое изображение.")
+        return {
+            **result,
+            "path": None,
+            "image_url": f"/api/adult-photo/result/{path.name}",
+        }
+
+    @app.post("/api/adult-photo/setup")
+    def adult_photo_setup() -> dict[str, Any]:
+        if not bool(services.db.get_setting("adult_photo_enabled", False)):
+            raise HTTPException(status_code=403, detail="Сначала включи раздел в общих настройках.")
+        script = services.settings.root_dir / "scripts" / "install_photo_engine.py"
+        if not script.is_file():
+            raise HTTPException(status_code=500, detail="Установщик генератора не найден.")
+        current = services.creative.install_status()
+        live = services.creative._installer_process
+        if live is not None and live.poll() is None:
+            return {"started": False, "already_running": True, "install": current, "pid": live.pid}
+        if current.get("running"):
+            pid = int(current.get("pid") or 0)
+            pid_alive = False
+            if pid > 0:
+                try:
+                    import psutil
+
+                    pid_alive = psutil.pid_exists(pid)
+                except Exception:
+                    pid_alive = False
+            # Backward-compatible fallback for an older status file with no PID. Pip/torch
+            # installation may legitimately stay quiet for much longer than five minutes.
+            if pid_alive or (not pid and int(time.time()) - int(current.get("updated_at") or 0) < 1800):
+                return {"started": False, "already_running": True, "install": current, "pid": pid or None}
+        logs = services.settings.root_dir / "logs"
+        logs.mkdir(parents=True, exist_ok=True)
+        output = (logs / "photo_engine_install.log").open("a", encoding="utf-8")
+        flags = 0
+        if os.name == "nt":
+            flags = getattr(subprocess, "CREATE_NO_WINDOW", 0) | getattr(
+                subprocess, "DETACHED_PROCESS", 0
+            )
+        try:
+            process = subprocess.Popen(
+                [sys.executable, str(script)],
+                cwd=services.settings.root_dir,
+                stdout=output,
+                stderr=output,
+                creationflags=flags,
+            )
+        finally:
+            output.close()
+        services.creative._installer_process = process
+        return {"started": True, "already_running": False, "pid": process.pid}
+
+    @app.get("/api/adult-photo/result/{filename}")
+    def adult_photo_result(filename: str) -> FileResponse:
+        if not re.fullmatch(r"generated-[A-Za-z0-9_-]+\.(?:png|jpe?g|webp)", filename, re.I):
+            raise HTTPException(status_code=404, detail="Изображение не найдено")
+        path = (services.creative.output_dir / filename).resolve()
+        if services.creative.output_dir.resolve() not in path.parents or not path.is_file():
+            raise HTTPException(status_code=404, detail="Изображение не найдено")
+        return FileResponse(path, media_type=mimetypes.guess_type(path.name)[0] or "image/png")
 
     @app.get("/api/hardware")
     def hardware() -> dict[str, Any]:
@@ -774,8 +1300,9 @@ def build_api(services: Services) -> FastAPI:
             "desktop_eyes_enabled": bool(services.db.get_setting("desktop_eyes_enabled", True)),
             "update_channel": str(services.db.get_setting("update_channel", "stable") or "stable"),
             "auto_update_check": bool(services.db.get_setting("auto_update_check", True)),
-            "version": "1.6.1",
-            "build": "r29-baya-fast-listening",
+            "adult_photo_enabled": bool(services.db.get_setting("adult_photo_enabled", False)),
+            "version": APP_VERSION,
+            "build": APP_BUILD,
         }
 
     @app.get("/api/preferences")
@@ -812,6 +1339,8 @@ def build_api(services: Services) -> FastAPI:
             services.db.set_setting("update_channel", channel)
         if "auto_update_check" in values:
             services.db.set_setting("auto_update_check", bool(values["auto_update_check"]))
+        if "adult_photo_enabled" in values:
+            services.db.set_setting("adult_photo_enabled", bool(values["adult_photo_enabled"]))
         if "autostart" in values:
             try:
                 _set_autostart(bool(values["autostart"]))
@@ -837,8 +1366,8 @@ def build_api(services: Services) -> FastAPI:
         present in the environment. Stable checks use /releases/latest; preview checks
         inspect recent published releases and may select a prerelease.
         """
-        current = "1.6.1"
-        build = "r29-baya-fast-listening"
+        current = APP_VERSION
+        build = APP_BUILD
         repo = str(os.getenv("EIRVEN_UPDATE_REPO", "FoxInDev/EIRVEN-AI") or "FoxInDev/EIRVEN-AI").strip().strip("/")
         if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repo):
             return {"ok": False, "current": current, "build": build, "error": "Некорректный EIRVEN_UPDATE_REPO"}
@@ -847,7 +1376,7 @@ def build_api(services: Services) -> FastAPI:
         headers = {
             "Accept": "application/vnd.github+json",
             "X-GitHub-Api-Version": "2026-03-10",
-            "User-Agent": "EIRVEN-AI/1.6.1",
+            "User-Agent": f"EIRVEN-AI/{APP_VERSION}",
         }
         token = str(os.getenv("GITHUB_TOKEN", "") or "").strip()
         if token:
@@ -1123,5 +1652,16 @@ def build_api(services: Services) -> FastAPI:
             return {"opened": True, "path": str(path)}
         except Exception as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.get("/api/video")
+    def video_status() -> dict[str, Any]:
+        return services.video.status()
+
+    @app.post("/api/video/open")
+    def open_video_folder() -> dict[str, Any]:
+        result = services.video.open_inbox()
+        if not result.get("opened") and result.get("error"):
+            raise HTTPException(status_code=400, detail=str(result.get("error")))
+        return result
 
     return app

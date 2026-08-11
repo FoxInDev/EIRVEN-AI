@@ -220,7 +220,7 @@ class Bootstrap:
             headers={
                 "Content-Type": "application/json",
                 "Accept": "application/x-ndjson, application/json",
-                "User-Agent": "EIRVEN-AI/1.6.1 model-downloader-v7",
+                "User-Agent": "EIRVEN-AI/1.7.3 model-downloader-v7",
             },
         )
         opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
@@ -652,7 +652,7 @@ class Bootstrap:
             temp.unlink(missing_ok=True)
             request = urllib.request.Request(
                 url,
-                headers={"User-Agent": "EIRVEN-AI/1.6.1", "Accept": "application/octet-stream"},
+                headers={"User-Agent": "EIRVEN-AI/1.7.3", "Accept": "application/octet-stream"},
             )
             try:
                 with urllib.request.urlopen(request, timeout=180) as response, temp.open("wb") as target:
@@ -853,7 +853,7 @@ class Bootstrap:
                 if "=" in raw and not raw.lstrip().startswith("#"):
                     k, v = raw.split("=", 1); old[k.strip()] = v.strip()
         values = {
-            "EIRVEN_HOST": "127.0.0.1",
+            "EIRVEN_HOST": "0.0.0.0",
             "EIRVEN_PORT": "7860",
             "EIRVEN_LLM_BACKEND": "claude_code_local",
             "EIRVEN_OLLAMA_URL": "http://127.0.0.1:11434",
@@ -1226,6 +1226,11 @@ class Bootstrap:
             # quirks look like a fatal install error. The installer performs only a local
             # import/compile smoke check; runtime diagnostics are available inside EIRVEN.
             self.run([str(self.python), "-c", "import sounddevice,soundfile,numpy,cv2; print('final audio/camera deps ok', cv2.__version__)"], "Финальная проверка аудио и камеры", timeout=120)
+            self.run(
+                [str(self.python), "-c", "import pathlib,imageio_ffmpeg; p=pathlib.Path(imageio_ffmpeg.get_ffmpeg_exe()); assert p.is_file(), p; print('video engine ok', p)"],
+                "Проверка видеодвижка FFmpeg",
+                timeout=120,
+            )
             self.run([str(self.python), "-m", "compileall", "-q", "src"], "Проверка Python")
             self.run(
                 [str(self.python), "-c", "import eirven_ai; from eirven_ai.app import app; print(eirven_ai.__version__)"],
@@ -1242,18 +1247,15 @@ class Bootstrap:
             self.update("Собираю приложение Windows", units=2, local_fraction=0.1)
             exe_ready = False
             try:
-                self.run(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(ROOT / "scripts" / "build_windows.ps1")], "Сборка EIRVEN-AI-r29.exe", timeout=1800)
-                exe_ready = (ROOT / "EIRVEN-AI-r29.exe").is_file()
+                self.run(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(ROOT / "scripts" / "build_windows.ps1")], "Сборка EIRVEN-AI-r37.exe", timeout=1800)
+                exe_ready = (ROOT / "EIRVEN-AI-r37.exe").is_file()
                 self.gui.post("log", "Однофайловый EXE успешно собран")
             except Exception as exc:
                 self.gui.post("log", f"EXE-сборка пропущена, включаю надёжный Python-launcher: {exc}")
             self.complete_step(2, "Приложение готово" if exe_ready else "Приложение готово через резервный launcher")
-            marker = ROOT / ".installed-v1.6.1-r29"
+            self.run(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(ROOT / "scripts" / "create_shortcut.ps1")], "Создание и проверка ярлыка", timeout=60)
+            marker = ROOT / ".installed-v1.7.3-r37"
             marker.write_text(time.strftime("%Y-%m-%d %H:%M:%S"), encoding="utf-8")
-            try:
-                self.run(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(ROOT / "scripts" / "create_shortcut.ps1")], "Создание ярлыка", timeout=60)
-            except Exception as exc:
-                self.gui.post("log", f"Ярлык не создан автоматически: {exc}")
             try:
                 self.run(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(ROOT / "scripts" / "install_autostart.ps1")], "Автозапуск голосового EIRVEN", timeout=60)
             except Exception as exc:
@@ -1272,7 +1274,7 @@ class Bootstrap:
         for attempt in range(1, 4):
             self.done_units = 0.0
             try:
-                state_file.write_text(json.dumps({"version": "1.6.1", "attempt": attempt, "status": "running", "updated": time.time()}), encoding="utf-8")
+                state_file.write_text(json.dumps({"version": "1.7.3", "attempt": attempt, "status": "running", "updated": time.time()}), encoding="utf-8")
                 if attempt > 1:
                     self.gui.post("retry", f"Перезапускаю установку автоматически — попытка {attempt}/3. Уже скачанное сохранено.", 0)
                 self.install_once()
@@ -1280,7 +1282,7 @@ class Bootstrap:
                 return
             except Exception as exc:
                 last_error = exc
-                state_file.write_text(json.dumps({"version": "1.6.1", "attempt": attempt, "status": "retry", "error": str(exc)[-1200:], "updated": time.time()}, ensure_ascii=False), encoding="utf-8")
+                state_file.write_text(json.dumps({"version": "1.7.3", "attempt": attempt, "status": "retry", "error": str(exc)[-1200:], "updated": time.time()}, ensure_ascii=False), encoding="utf-8")
                 if attempt < 3:
                     delay = 3 if attempt == 1 else 8
                     self.gui.post("retry", f"Установка встретила ошибку. Через {delay} сек. попробую ещё раз автоматически ({attempt + 1}/3).", delay)
@@ -1320,7 +1322,7 @@ class InstallerGUI:
             pass
         self.root = tk.Tk()
         self.root.title("Установка EIRVEN")
-        self.root.geometry("640x565")
+        self.root.geometry("640x495")
         self.root.resizable(False, False)
         self.root.configure(bg="#050711")
         try:
@@ -1376,25 +1378,21 @@ class InstallerGUI:
         self.steps.pack(pady=(0, 2))
 
         self.model_title = tk.Label(
-            self.root, text="Модели: этап ещё не начался", font=("Segoe UI", 9, "bold"),
+            self.root, text="", font=("Segoe UI", 9, "bold"),
             fg="#c8c1ff", bg="#050711", wraplength=570, justify="center",
         )
-        self.model_title.pack(pady=(2, 4))
         self.model_bar = ttk.Progressbar(
             self.root, maximum=100, length=468, style="Eirven.Model.Horizontal.TProgressbar",
         )
-        self.model_bar.pack(padx=70, fill="x")
         self.model_detail = tk.Label(
-            self.root,
-            text="Во время загрузки здесь появятся проценты, объём, скорость и время без новых байтов.",
+            self.root, text="",
             font=("Segoe UI", 8), fg="#8d96b5", bg="#050711", wraplength=570, justify="center",
         )
-        self.model_detail.pack(pady=(5, 0))
         self.note = tk.Label(
-            self.root, text="Если сеть или Windows дадут сбой, я попробую ещё раз сама.",
+            self.root, text="Если что-то сорвётся, просто запусти EIRVEN снова — уже скачанное сохранится.",
             font=("Segoe UI", 8), fg="#61708f", bg="#050711", wraplength=570, justify="center",
         )
-        self.note.pack(pady=(5, 0))
+        self.note.pack(pady=(12, 0))
 
         self.q: queue.Queue = queue.Queue()
         self.root.after(100, self.poll)
@@ -1489,29 +1487,9 @@ class InstallerGUI:
                     self.steps.config(text=step_text, fg="#88dff5")
                     self.status.config(text=str(message), fg="#9aa9cb")
                 elif kind == "model_progress":
-                    payload = args[0] if args and isinstance(args[0], dict) else {}
-                    model = str(payload.get("model") or "модель")
-                    ready = int(payload.get("ready") or 0)
-                    count = int(payload.get("count") or 0)
-                    index = int(payload.get("index") or 0)
-                    phase = str(payload.get("phase") or "Загрузка")
-                    detail = str(payload.get("detail") or "")
-                    position = f" • текущая {index}/{count}" if index and count else ""
-                    summary = f"Модели: готово {ready}/{count}{position} • {model}" if count else f"Модель: {model}"
-                    self.model_title.config(text=summary, fg="#c8c1ff")
-                    percent = payload.get("percent")
-                    if percent is None:
-                        self.model_bar.configure(mode="indeterminate")
-                        self.model_bar.start(12)
-                    else:
-                        self.model_bar.stop()
-                        self.model_bar.configure(mode="determinate")
-                        self.model_bar["value"] = max(0.0, min(100.0, float(percent)))
-                    self.model_detail.config(text=f"{phase}: {detail}", fg="#9da8cc")
+                    pass
                 elif kind == "retry":
-                    message = str(args[0]) if args else "Повторяю автоматически…"
-                    self.status.config(text="Восстанавливаю установку", fg="#e9b8ff")
-                    self.note.config(text=message, fg="#bda9e8")
+                    self.status.config(text="Восстанавливаю установку автоматически", fg="#e9b8ff")
                 elif kind == "log":
                     pass
                 elif kind == "error":
@@ -1525,13 +1503,8 @@ class InstallerGUI:
                 elif kind == "done":
                     self.exit_code = 0
                     self.bar["value"] = 100
-                    self.model_bar.stop()
-                    self.model_bar.configure(mode="determinate")
-                    self.model_bar["value"] = 100
                     self.percent.config(text="Общий прогресс: 100%")
                     self.status.config(text="Готово", fg="#dffcff")
-                    self.model_title.config(text="Все обязательные модели готовы", fg="#bdf9ff")
-                    self.model_detail.config(text="Загрузка и проверка завершены", fg="#8cefff")
                     self.note.config(text="Запускаю EIRVEN…", fg="#8cefff")
                     self.root.after(900, self.root.destroy)
         except queue.Empty:

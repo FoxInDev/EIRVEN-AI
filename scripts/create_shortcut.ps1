@@ -1,30 +1,35 @@
 $ErrorActionPreference = "Stop"
 $Root = Split-Path -Parent $PSScriptRoot
-$Desktop = [Environment]::GetFolderPath("Desktop")
-$ShortcutPath = Join-Path $Desktop "EIRVEN AI.lnk"
 $Shell = New-Object -ComObject WScript.Shell
-$Shortcut = $Shell.CreateShortcut($ShortcutPath)
-$VersionedExe = Join-Path $Root "EIRVEN-AI-r29.exe"
+$VersionedExe = Join-Path $Root "EIRVEN-AI-r37.exe"
 $LegacyExe = Join-Path $Root "EIRVEN-AI.exe"
 if (Test-Path $VersionedExe) {
-    $Shortcut.TargetPath = $VersionedExe
+    $TargetPath = $VersionedExe
 } elseif (Test-Path $LegacyExe) {
-    $Shortcut.TargetPath = $LegacyExe
+    $TargetPath = $LegacyExe
 } else {
-    $Shortcut.TargetPath = Join-Path $Root "EIRVEN AI.cmd"
+    $TargetPath = Join-Path $Root "EIRVEN AI.cmd"
 }
-$Shortcut.WorkingDirectory = $Root
-$Shortcut.Description = "Local personal AI"
+if (-not (Test-Path $TargetPath)) { throw "EIRVEN launch target was not found: $TargetPath" }
+$DesktopCandidates = @([Environment]::GetFolderPath("Desktop"), $Shell.SpecialFolders.Item("Desktop")) |
+    Where-Object { $_ -and $_.Trim() } |
+    ForEach-Object { [Environment]::ExpandEnvironmentVariables($_).Trim() } |
+    Select-Object -Unique
+if (-not $DesktopCandidates) { throw "Windows did not return the current user Desktop path" }
 $Icon = Join-Path $Root "assets\eirven.ico"
-if (Test-Path $Icon) { $Shortcut.IconLocation = $Icon }
-$Shortcut.Save()
-# Refresh Explorer's shortcut/icon cache without restarting the desktop shell.
-Add-Type @"
-using System;
-using System.Runtime.InteropServices;
-public static class EirvenShortcutNotify {
-  [DllImport("shell32.dll")] public static extern void SHChangeNotify(uint eventId, uint flags, IntPtr item1, IntPtr item2);
+$Created = @()
+foreach ($Desktop in $DesktopCandidates) {
+    New-Item -ItemType Directory -Path $Desktop -Force | Out-Null
+    $ShortcutPath = Join-Path $Desktop "EIRVEN AI.lnk"
+    $Shortcut = $Shell.CreateShortcut($ShortcutPath)
+    $Shortcut.TargetPath = $TargetPath
+    $Shortcut.WorkingDirectory = $Root
+    $Shortcut.Description = "Local personal AI"
+    if (Test-Path $Icon) { $Shortcut.IconLocation = $Icon }
+    $Shortcut.Save()
+    if (-not (Test-Path $ShortcutPath)) { throw "Desktop shortcut was not created: $ShortcutPath" }
+    $Verified = $Shell.CreateShortcut($ShortcutPath)
+    if ([IO.Path]::GetFullPath($Verified.TargetPath) -ne [IO.Path]::GetFullPath($TargetPath)) { throw "Desktop shortcut points to the wrong target: $ShortcutPath" }
+    $Created += $ShortcutPath
 }
-"@ -ErrorAction SilentlyContinue
-[EirvenShortcutNotify]::SHChangeNotify(0x08000000, 0, [IntPtr]::Zero, [IntPtr]::Zero)
-Write-Host "Shortcut created: $ShortcutPath"
+Write-Host "Desktop shortcut created and verified: $($Created -join '; ')"

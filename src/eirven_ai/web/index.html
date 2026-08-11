@@ -64,6 +64,8 @@
               <button data-settings-tab="voice">Голос</button>
               <button data-settings-tab="appearance">Внешний вид</button>
               <button data-settings-tab="privacy">Приватность</button>
+              <button data-settings-tab="video">Видео</button>
+              <button data-settings-tab="mobile">Телефон</button>
               <button data-settings-tab="telegram">Telegram</button>
               <button data-settings-tab="updates">Обновления</button>
             </nav>
@@ -86,8 +88,15 @@
                   <label>Имя ИИ<input id="assistant-name" maxlength="32" placeholder="Эйрвен"></label>
                   <label>Как тебя называть<input id="user-address" maxlength="48" placeholder="Твоё имя"></label>
                   <div class="voice-signature"><span class="voice-signature-dot"></span><div><b>Бая</b><small>Фирменный голос <span class="assistant-name-ref">Эйрвен</span> · эмоции и темп автоматически</small></div></div>
-                  <label>Стиль общения<select id="communication-style"><option value="balanced">Спокойно и живо</option><option value="friendly">Дружелюбно</option><option value="brief">Коротко и по делу</option><option value="free">Свободно и с юмором</option></select></label>
-                  <p class="setting-copy">Интонация, эмоции и скорость определяются автоматически по смыслу фразы. Ручных регуляторов для них нет.</p>
+                  <div class="style-picker"><span>Стиль общения</span>
+                    <div id="communication-style" class="preset-group" role="group" aria-label="Стиль общения">
+                      <button type="button" class="preset-chip" data-style-preset="balanced"><b>Спокойно и живо</b><small>естественно, без лишнего шума</small></button>
+                      <button type="button" class="preset-chip" data-style-preset="friendly"><b>Дружелюбно</b><small>теплее и мягче</small></button>
+                      <button type="button" class="preset-chip" data-style-preset="brief"><b>Коротко и по делу</b><small>без воды и шуток</small></button>
+                      <button type="button" class="preset-chip" data-style-preset="free"><b>Свободно и с юмором</b><small>живее, с заметным вайбом Эрви</small></button>
+                    </div>
+                  </div>
+                  <p class="setting-copy">Разница заметна и в тексте, и в голосе: живой режим свободнее, юморнее и эмоциональнее, короткий — суше и короче.</p>
                   <button id="voice-preview-button" class="glass-action">Послушать пример</button><audio id="voice-preview" hidden></audio>
                 </article>
               </section>
@@ -108,6 +117,58 @@
                   <div class="setting-row"><div><b>Комментарии у сферы</b><small>Показывать на рабочем столе, чем <span class="assistant-name-ref">Эйрвен</span> сейчас занята</small></div><label class="switch"><input id="desktop-comments-enabled" type="checkbox"><span></span></label></div>
                   <div class="privacy-note">История и персональные настройки хранятся локально в EIRVEN. Защищённые шаги вроде пароля, CAPTCHA и 2FA <span class="assistant-name-ref">Эйрвен</span> не обходит.</div>
                   <button id="clear-current-chat" class="glass-action danger-soft">Очистить текущий диалог</button>
+                </article>
+              </section>
+
+              <section class="settings-panel" data-settings-panel="video">
+                <article class="settings-card settings-wide">
+                  <h3>Видео</h3>
+                  <p class="setting-copy"><span class="assistant-name-ref">Эйрвен</span> умеет реально монтировать и обрабатывать видео локально: склеивать, обрезать, менять качество, формат, скорость и звук, поворачивать и кадрировать, стабилизировать, добавлять текст и плавные эффекты.</p>
+                  <div class="telegram-guide">
+                    <b>Как начать — три шага</b>
+                    <ol>
+                      <li>Нажми «Открыть папку video» и положи прямо туда все нужные исходники. Форматы могут быть разными.</li>
+                      <li>После окончания копирования файлы сами сразу станут <code>1.mp4</code>, <code>2.mov</code>, <code>3.mkv</code> и так далее. Затем скажи обычными словами, что сделать; перед рендером исходники дополнительно проверятся.</li>
+                      <li>Посмотри готовый <code>result.*</code>. Если всё хорошо, скажи: <code>Эрви, принимаю монтаж</code>.</li>
+                    </ol>
+                    <small>После принятия исходники не удаляются: они переходят в <code>video_archive</code>, а результат — в <code>video_results</code>. Новые файлы не смешиваются с активным проектом без вопроса.</small>
+                  </div>
+                  <p class="setting-copy"><b>Примеры:</b><br>«Склей все видео по порядку».<br>«У первого убери первые 5 секунд и склей все».<br>«После склейки оставь от 00:10 до 01:20».<br>«Сделай 1080p, немного очисти шум и увеличь громкость до 120 процентов».<br>«Сделай вертикальное 9:16, края можно обрезать».</p>
+                  <div class="update-actions"><button id="open-video-folder" class="glass-action">Открыть папку video</button><span id="video-folder-status">Готова принять исходники</span></div>
+                </article>
+              </section>
+
+              <section class="settings-panel" data-settings-panel="mobile">
+                <article class="settings-card settings-wide">
+                  <h3>Приложение на телефоне</h3>
+                  <p class="setting-copy">Телефон работает как защищённый пульт к этой EIRVEN: использует те же модели, память, голос, команды, задачи и видеомонтаж. Компьютер и телефон должны быть в одной домашней Wi‑Fi сети.</p>
+                  <div class="mobile-qr-card">
+                    <div id="mobile-download-qr" class="mobile-download-qr" role="img" aria-label="QR-код для скачивания EIRVEN Mobile"><span>Создаю QR…</span></div>
+                    <div class="mobile-qr-copy">
+                      <b>1. Отсканируй QR камерой телефона</b>
+                      <p>Откроется локальная страница с зелёным подтверждением связи и кнопкой скачивания <code>EIRVEN-Mobile.apk</code>. QR создаётся заново из текущего Wi‑Fi адреса компьютера.</p>
+                      <a id="mobile-download-link" class="glass-action" href="#" target="_blank" rel="noopener" hidden>Открыть страницу установки</a>
+                      <small id="mobile-apk-detail">Проверяю наличие приложения…</small>
+                    </div>
+                  </div>
+                  <div class="telegram-guide">
+                    <b>2. Установи и подключи — без догадок</b>
+                    <ol>
+                      <li>На странице установки нажми «Скачать», открой APK и разреши Android установку из браузера, если он спросит.</li>
+                      <li>Запусти приложение <code>EIRVEN Mobile</code>.</li>
+                      <li>Введи в нём адрес и код, показанные ниже.</li>
+                      <li>Дай приложению доступ к микрофону. EIRVEN сама создаёт узкое правило Windows Firewall только для текущего порта и локального сегмента.</li>
+                    </ol>
+                    <small>Не открывай порт роутера в интернет. Интерфейс компьютера остаётся недоступным другим устройствам; мобильный клиент получает только нужные ему команды по отдельному коду.</small>
+                  </div>
+                  <div id="mobile-network-detail" class="mobile-network-detail">Проверяю Wi‑Fi интерфейс и Windows Firewall…</div>
+                  <p class="mobile-network-tip">Если зелёный статус есть, но ссылка с телефона всё равно не открывается: отключи VPN на обоих устройствах и проверь, что это не гостевой Wi‑Fi с изоляцией клиентов.</p>
+                  <div id="mobile-address-options" class="mobile-address-options" hidden></div>
+                  <div class="mobile-connect-grid">
+                    <div class="mobile-connect-value"><small>Адрес компьютера</small><code id="mobile-address">Определяю…</code><button id="copy-mobile-address" class="glass-action">Копировать адрес</button></div>
+                    <div class="mobile-connect-value"><small>Код подключения</small><code id="mobile-token">Определяю…</code><button id="copy-mobile-token" class="glass-action">Копировать код</button></div>
+                  </div>
+                  <div class="update-actions"><button id="refresh-mobile-network" class="glass-action">Обновить Wi‑Fi адрес</button><button id="regenerate-mobile-token" class="glass-action danger-soft">Сменить код</button><span id="mobile-status">Проверяю локальную сеть…</span></div>
                 </article>
               </section>
 
@@ -144,7 +205,7 @@
               <section class="settings-panel" data-settings-panel="updates">
                 <article class="settings-card settings-wide">
                   <h3>Обновления</h3>
-                  <div class="setting-row"><div><b>Версия</b><small id="version-caption">EIRVEN 1.6.1 · r29-baya-fast-listening</small></div><span class="version-pill" id="version-pill">r29-baya-fast-listening</span></div>
+                  <div class="setting-row"><div><b>Версия</b><small id="version-caption">EIRVEN 1.7.3 · r37-mobile-clean</small></div><span class="version-pill" id="version-pill">r37-mobile-clean</span></div>
                   <div class="setting-row"><div><b>Канал обновлений</b><small>Стабильные или предварительные сборки</small></div><select id="update-channel"><option value="stable">Стабильный</option><option value="preview">Предварительный</option></select></div>
                   <div class="setting-row"><div><b>Проверять автоматически</b><small>Проверка при открытии раздела обновлений</small></div><label class="switch"><input id="auto-update-check" type="checkbox"><span></span></label></div>
                   <div class="update-actions"><button id="check-updates" class="glass-action">Проверить сейчас</button><a id="download-update" class="glass-action update-download" href="#" target="_blank" rel="noopener" hidden>Скачать обновление</a><span id="update-status">Не проверялось</span></div>
@@ -172,7 +233,14 @@
         <span class="eyebrow">ПРИВЕТ</span><h2>Я <span id="onboard-intro-name">Эйрвен</span>.</h2><p>Если хочешь, можешь назвать меня по‑своему.</p>
         <label>Моё имя<input id="onboard-assistant-name" maxlength="32" value="Эйрвен"></label>
         <div class="voice-signature onboarding-voice"><span class="voice-signature-dot"></span><div><b>Голос: Бая</b><small>Живой фирменный голос <span class="assistant-name-ref">Эйрвен</span></small></div></div>
-        <label>Стиль общения<select id="onboard-style"><option value="balanced">Спокойно и живо</option><option value="friendly">Дружелюбно</option><option value="brief">Коротко и по делу</option><option value="free">Свободно и с юмором</option></select></label>
+        <div class="style-picker"><span>Стиль общения</span>
+          <div id="onboard-style" class="preset-group" role="group" aria-label="Стиль общения при знакомстве">
+            <button type="button" class="preset-chip" data-style-preset="balanced"><b>Спокойно и живо</b><small>универсальный вариант</small></button>
+            <button type="button" class="preset-chip" data-style-preset="friendly"><b>Дружелюбно</b><small>теплее и мягче</small></button>
+            <button type="button" class="preset-chip" data-style-preset="brief"><b>Коротко и по делу</b><small>минимум лишнего</small></button>
+            <button type="button" class="preset-chip" data-style-preset="free"><b>Свободно и с юмором</b><small>самый живой режим</small></button>
+          </div>
+        </div>
         <button class="onboard-next primary" data-next="2">Дальше</button>
       </section>
       <section class="onboarding-step" data-step="2">
@@ -187,6 +255,7 @@
       <div class="onboarding-dots"><i class="active"></i><i></i><i></i></div>
     </div>
   </div>
+  <script src="/ui/qrcode.js"></script>
   <script src="/ui/app.js"></script>
 </body>
 </html>

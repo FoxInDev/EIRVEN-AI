@@ -3,10 +3,9 @@ $Root = Split-Path -Parent $PSScriptRoot
 Set-Location -LiteralPath $Root
 $IconPath = (Resolve-Path (Join-Path $Root "assets\eirven.ico")).Path
 $VersionPath = (Resolve-Path (Join-Path $Root "assets\eirven-version.txt")).Path
-$BuildName = "EIRVEN-AI-r29"
+$BuildName = "EIRVEN-AI-r37"
 $Built = Join-Path $Root "dist\$BuildName.exe"
 $Target = Join-Path $Root "$BuildName.exe"
-$LegacyTarget = Join-Path $Root "EIRVEN-AI.exe"
 
 if (-not (Test-Path ".venv\Scripts\python.exe")) {
     py -3.12 -m venv .venv
@@ -23,13 +22,14 @@ Remove-Item -Recurse -Force build, dist -ErrorAction SilentlyContinue
 # Never let a stale spec/resource or old executable survive a rebuild.
 Remove-Item -LiteralPath (Join-Path $Root "$BuildName.spec") -Force -ErrorAction SilentlyContinue
 Remove-Item -LiteralPath (Join-Path $Root "EIRVEN-AI.spec") -Force -ErrorAction SilentlyContinue
-Remove-Item -LiteralPath $Target, $LegacyTarget -Force -ErrorAction SilentlyContinue
+Remove-Item -LiteralPath $Target -Force -ErrorAction SilentlyContinue
 & .\.venv\Scripts\python.exe -m PyInstaller `
     --noconfirm `
     --clean `
     --onefile `
     --windowed `
     --name $BuildName `
+    --collect-all imageio_ffmpeg `
     "--icon=$IconPath" `
     --version-file $VersionPath `
     launcher.py
@@ -52,7 +52,6 @@ try {
 finally { $EmbeddedIcon.Dispose() }
 
 Copy-Item -LiteralPath $Built -Destination $Target -Force
-Copy-Item -LiteralPath $Built -Destination $LegacyTarget -Force
 
 Add-Type @"
 using System;

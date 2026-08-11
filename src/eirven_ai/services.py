@@ -47,6 +47,7 @@ from .universal_workflow import UniversalWorkflowEngine
 from .autonomous_workflow import AutonomousWorkflowEngine
 from .mission_engine import MissionEngine
 from .cognition import AgentCognition
+from .video import VideoEditor
 
 
 TELEGRAM_RULE_SCHEMA: dict[str, Any] = {
@@ -112,6 +113,7 @@ class Services:
     game: GamePilot
     creative: CreativeService
     cognition: AgentCognition
+    video: VideoEditor
     voice_daemon: NativeVoiceDaemon | None = None
     camera: Any | None = None
     modes: ModeController | None = None
@@ -194,6 +196,7 @@ def build_services(settings: Settings | None = None) -> Services:
     # internal implementation details and no longer require a second checkbox.
     settings.enable_game_control = bool(settings.enable_desktop_control)
     gateway = ModelGateway(settings)
+    video = VideoEditor(settings, gateway)
     router = ModelRouter(settings, gateway, hardware)
     memory = MemoryStore(
         db, gateway, settings.embedding_model, semantic_enabled=settings.semantic_memory
@@ -212,8 +215,9 @@ def build_services(settings: Settings | None = None) -> Services:
     telegram = TelegramMonitor(settings, db, gateway, style)
     tasks = TaskManager(db, settings.max_parallel_tasks)
     intents = IntentRouter()
+    companion_host = "127.0.0.1" if settings.host in {"0.0.0.0", "::"} else settings.host
     companion = DesktopCompanion(
-        db, identity, f"http://{settings.host}:{settings.port}/ui/"
+        db, identity, f"http://{companion_host}:{settings.port}/ui/"
     )
     game = GamePilot(settings, gateway, tools)
     creative = CreativeService(settings)
@@ -255,6 +259,7 @@ def build_services(settings: Settings | None = None) -> Services:
         game=game,
         creative=creative,
         cognition=cognition,
+        video=video,
         camera=camera,
         modes=modes,
         runtime=runtime,
@@ -310,6 +315,7 @@ def build_services(settings: Settings | None = None) -> Services:
     setattr(chat, "mission_engine", mission_engine)
     setattr(chat, "cognition", cognition)
     setattr(chat, "telegram", telegram)
+    setattr(chat, "video", video)
     telegram.bind_remote_handler(
         lambda command, chat_id: chat.complete(
             command,
@@ -785,6 +791,17 @@ def build_services(settings: Settings | None = None) -> Services:
         notify(context, f"Изображение готово: {result['path']}", {"task_id": context.task_id, "kind": "creative_image", "result": result})
         return result
 
+    def video_edit_handler(context: TaskContext, payload: dict[str, Any]) -> dict[str, Any]:
+        result = video.render(context, payload)
+        answer = gender_guard(str(result.get("answer") or "Видео готово."))
+        result["answer"] = answer
+        notify(
+            context,
+            answer,
+            {"task_id": context.task_id, "kind": "video_edit", "result": result},
+        )
+        return result
+
     def game_handler(context: TaskContext, payload: dict[str, Any]) -> dict[str, Any]:
         goal = str(payload.get("goal") or "играть безопасно").strip()
         window_title = str(payload.get("window_title") or "Minecraft")
@@ -815,6 +832,7 @@ def build_services(settings: Settings | None = None) -> Services:
     tasks.register("media_open", background(media_open_handler))
     tasks.register("game", background(game_handler))
     tasks.register("creative_image", background(creative_handler))
+    tasks.register("video_edit", background(video_edit_handler))
     # r21 removes neuro-music entirely: the output device belongs to speech and media,
     # and the UI no longer exposes a synthetic background-audio control.
     services.ambient = None

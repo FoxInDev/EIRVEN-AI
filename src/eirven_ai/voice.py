@@ -13,6 +13,7 @@ from typing import Any
 from .config import Settings
 from .database import Database
 from .identity import IdentityService, VOICE_CATALOG, VOICE_MODES
+from .russian_speech import speech_ready_text
 from .voice_worker_client import VoiceWorkerClient, VoiceWorkerError
 from .tts_worker_client import TTSWorkerClient, TTSWorkerError
 
@@ -348,7 +349,7 @@ class VoiceService:
 
     @staticmethod
     def _prepare_text(text: str, mode: str) -> str:
-        clean = " ".join(text.strip().split())
+        clean = speech_ready_text(text)
         if mode in {"energetic", "amused", "proud"}:
             clean = clean.replace("…", ".").replace("...", ".")
         if mode == "strict":

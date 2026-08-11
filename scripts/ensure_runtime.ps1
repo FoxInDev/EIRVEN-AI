@@ -99,7 +99,7 @@ function Install-Python312Direct {
         }
 
         $sig = Get-AuthenticodeSignature -FilePath $installer
-        if ($sig.Status -eq 'NotSigned' -or ($sig.SignerCertificate -and $sig.SignerCertificate.Subject -notmatch 'Python Software Foundation')) {
+        if ($sig.Status -ne 'Valid' -or -not $sig.SignerCertificate -or $sig.SignerCertificate.Subject -notmatch 'Python Software Foundation') {
             throw "The Python installer signature could not be trusted ($($sig.Status))."
         }
 

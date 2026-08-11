@@ -58,7 +58,7 @@ class MissionEngine:
     # tense words inside message text ("что включил музыку") never become new nodes.
     _ACTION = re.compile(
         r"\b(откро|зайд|запуст|перейд|найд|отыщ|добав|полож|отправ|ответ|напиш|"
-        r"посмотр|проверь|прочита|скача|сохран|закро|заверш|включ|выключ|постав|продолж|увелич|уменьш|игра)\w*",
+        r"посмотр|проверь|прочита|скача|сохран|закро|заверш|включ|вруб|воспроизвед|выключ|постав|продолж|увелич|уменьш|игра)\w*",
         re.I,
     )
     _ACTION_TOKEN = re.compile(
@@ -66,7 +66,7 @@ class MissionEngine:
         r"найди(?:те)?|отыщи(?:те)?|добавь(?:те)?|положи(?:те)?|отправь(?:те)?|"
         r"ответь(?:те)?|напиши(?:те)?|скачай(?:те)?|сохрани(?:те)?|закрой(?:те)?|"
         r"посмотри(?:те)?|проверь(?:те)?|прочитай(?:те)?|"
-        r"заверши(?:те)?|включи(?:те)?|выключи(?:те)?|поставь(?:те)?|"
+        r"заверши(?:те)?|включи(?:те)?|вруби(?:те)?|воспроизведи(?:те)?|выключи(?:те)?|поставь(?:те)?|"
         r"продолжи(?:те)?|увеличь(?:те)?|уменьши(?:те)?|играй(?:те)?)\b", re.I,
     )
     _LONG_HINT = re.compile(
@@ -77,7 +77,7 @@ class MissionEngine:
         re.I,
     )
     _APPS: tuple[tuple[str, re.Pattern[str]], ...] = (
-        ("telegram", re.compile(r"\b(?:telegram|телеграм\w*|телегр\w*|телега\w*|тг|избранн\w*|saved messages)\b", re.I)),
+        ("telegram", re.compile(r"\b(?:telegram|телеграм\w*|телегр\w*|телег\w*|тг|избранн\w*|saved messages)\b", re.I)),
         ("mesh", re.compile(r"\b(?:м[эе]ш|mesh|дневник\s+м[эе]ш|московск\w*\s+электронн\w*\s+школ)\b", re.I)),
         ("yandex_music", re.compile(r"\b(яндекс\s*музык\w*|yandex\s*music|моя\s+волна|трек|альбом)\b", re.I)),
         ("browser", re.compile(r"\b(сайт|страниц|браузер|каталог|корзин|товар|магазин)\w*", re.I)),
@@ -116,7 +116,16 @@ class MissionEngine:
         if not text or not self._ACTION.search(text):
             return False
         apps = {name for name, pattern in self._APPS if pattern.search(text)}
-        actions = len(self._ACTION.findall(text))
+        # Generic ``включи музыку`` is a concrete Yandex Music surface even though the
+        # owner did not have to say the product name. This makes music + Telegram a
+        # real cross-app graph instead of one ambiguous application lookup.
+        if re.search(
+            r"\b(?:включи|вруби|запусти|поставь|воспроизведи)\w*\s+(?:мне\s+)?(?:музык\w*|песн\w*|трек\w*)",
+            text,
+            re.I,
+        ):
+            apps.add("yandex_music")
+        actions = len(self._ACTION_TOKEN.findall(text))
         file_transfer = bool(
             re.search(r"\bотправ\w*\b.{0,80}\bфайл\w*\b", text, re.I)
             and re.search(r"\b(?:telegram|телеграм\w*|телегр\w*|тг|почт\w*|discord)\b", text, re.I)
@@ -326,7 +335,7 @@ class MissionEngine:
         for index, match in enumerate(matches):
             stop = matches[index + 1].start() if index + 1 < len(matches) else len(text)
             part = text[match.start():stop]
-            part = re.sub(r"(?:,|;|\b(?:и|а|потом|затем|далее|после\s+этого)\b)\s*$", "", part, flags=re.I).strip(" ,.;")
+            part = re.sub(r"[,;]?\s*\b(?:и|а\s+потом|и\s+потом|потом|затем|далее|после\s+этого)\b\s*$", "", part, flags=re.I).strip(" ,.;")
             if part:
                 parts.append(part)
         return parts or [text.strip(" ,.;")]
@@ -390,7 +399,7 @@ class MissionEngine:
                 continue
             apps = self._apps_for(part)
             explicit_app = next(iter(apps), "") if len(apps) == 1 else ""
-            generic_music = bool(re.match(r"^\s*(?:включи|запусти|поставь|воспроизведи)\w*\s+(?:мне\s+)?(?:музык\w*|песн\w*|трек\w*)", part, re.I))
+            generic_music = bool(re.match(r"^\s*(?:включи|вруби|запусти|поставь|воспроизведи)\w*\s+(?:мне\s+)?(?:музык\w*|песн\w*|трек\w*)", part, re.I))
             if generic_music:
                 explicit_app = "yandex_music"
             target = self._open_target_text(part) if re.match(r"^\s*(?:открой|запусти|зайди)\w*\b", part, re.I) else ""
@@ -413,7 +422,7 @@ class MissionEngine:
                 kind = "telegram_unread"
             elif app == "telegram" and re.match(r"^\s*(?:напиши|отправь)\w*\b", part, re.I) and not re.search(r"\bфайл\w*", part, re.I):
                 kind = "telegram_message"
-            elif app == "yandex_music" and re.match(r"^\s*(?:включи|играй|продолжи|поставь)\w*\b", part, re.I):
+            elif app == "yandex_music" and re.match(r"^\s*(?:включи|вруби|воспроизведи|играй|продолжи|поставь|запусти)\w*\b", part, re.I):
                 kind = "media"
             elif re.match(r"^\s*(?:открой|запусти|зайди)\w*\b", part, re.I) and app in {"telegram", "yandex_music"}:
                 kind = "app"

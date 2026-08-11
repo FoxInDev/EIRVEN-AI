@@ -120,7 +120,7 @@ class Settings:
             root_dir=root,
             data_dir=data,
             workspace_dir=workspace,
-            host=os.getenv("EIRVEN_HOST", "127.0.0.1"),
+            host=os.getenv("EIRVEN_HOST", "0.0.0.0"),
             port=_int("EIRVEN_PORT", 7860),
             llm_backend=os.getenv("EIRVEN_LLM_BACKEND", "claude_code_local").strip().lower(),
             ollama_url=os.getenv("EIRVEN_OLLAMA_URL", "http://127.0.0.1:11434").rstrip("/"),

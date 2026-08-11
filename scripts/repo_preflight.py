@@ -3,10 +3,11 @@ from __future__ import annotations
 import re
 import sys
 import tomllib
+import zipfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-EXPECTED_VERSION = "1.6.1"
+EXPECTED_VERSION = "1.7.3"
 
 SKIP_DIRS = {
     ".git", ".venv", "venv", "build", "dist", "release", "models", "logs",
@@ -71,9 +72,56 @@ def validate_tree() -> None:
         fail("runtime/private artifacts in repository: " + ", ".join(sorted(offenders)))
 
 
+def validate_clean_install() -> None:
+    """Prove the archive has every bootstrap input needed on a Python-free PC."""
+    required = (
+        "INSTALL EIRVEN AI.cmd",
+        "scripts/ensure_runtime.ps1",
+        "scripts/bootstrap_r27.py",
+        "requirements.txt",
+        "requirements-desktop.txt",
+        "requirements-integrations.txt",
+        "requirements-voice.txt",
+        "mobile_client/EIRVEN-Mobile.apk",
+        "src/eirven_ai/web/qrcode.js",
+    )
+    missing = [name for name in required if not (ROOT / name).is_file()]
+    if missing:
+        fail("clean installer inputs are missing: " + ", ".join(missing))
+
+    installer = (ROOT / "scripts" / "ensure_runtime.ps1").read_text(encoding="utf-8")
+    installer_contract = (
+        "https://www.python.org/ftp/python/",
+        "$sig.Status -ne 'Valid'",
+        "Python Software Foundation",
+        "InstallAllUsers=1",
+        "https://ollama.com/install.ps1",
+        "https://claude.ai/install.ps1",
+        "scripts\\bootstrap_r27.py",
+    )
+    absent = [token for token in installer_contract if token not in installer]
+    if absent:
+        fail("clean installer contract is incomplete: " + ", ".join(absent))
+
+    apk = ROOT / "mobile_client" / "EIRVEN-Mobile.apk"
+    if apk.stat().st_size < 100_000:
+        fail("mobile APK is unexpectedly small")
+    try:
+        with zipfile.ZipFile(apk) as archive:
+            names = set(archive.namelist())
+    except (OSError, zipfile.BadZipFile) as exc:
+        fail(f"mobile APK is not a valid signed archive: {exc}")
+    apk_required = {"AndroidManifest.xml", "classes.dex", "assets/index.html"}
+    if not apk_required.issubset(names):
+        fail("mobile APK misses: " + ", ".join(sorted(apk_required - names)))
+    if not any(name.startswith("META-INF/") and name.endswith((".RSA", ".DSA", ".EC")) for name in names):
+        fail("mobile APK has no signing certificate")
+
+
 def main() -> None:
     validate_pyproject()
     validate_tree()
+    validate_clean_install()
     print(f"REPO_PREFLIGHT=PASS version={EXPECTED_VERSION}")
 
 

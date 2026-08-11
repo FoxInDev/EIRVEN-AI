@@ -30,11 +30,7 @@ class ReliabilityRouter:
     """
 
     APP_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
-<<<<<<< HEAD
-        ("telegram", re.compile(r"\b(?:telegram|телеграм\w*|телегр\w*|телега\w*|тг)\b", re.I)),
-=======
-        ("telegram", re.compile(r"\b(?:telegram|т?елеграм\w*|телегр\w*|телега\w*|тг)\b", re.I)),
->>>>>>> b48a166 (fix: repair mini orb, autostart and Telegram sending)
+        ("telegram", re.compile(r"\b(?:telegram|т?елеграм\w*|телег\w*|тг)\b", re.I)),
         ("yandex_music", re.compile(r"\b(?:яндекс\s*музык\w*|yandex\s*music)\b", re.I)),
         ("youtube", re.compile(r"\b(?:youtube|ютуб\w*)\b", re.I)),
         ("spotify", re.compile(r"\b(?:spotify|спотифай\w*)\b", re.I)),
@@ -43,7 +39,8 @@ class ReliabilityRouter:
     )
     ACTION = re.compile(
         r"\b(?:открой|запусти|зайди|перейди|найди|отыщи|добавь|положи|отправь|ответь|"
-        r"напиши|посмотри|проверь|прочитай|включи|выключи|поставь|продолжи|нажми|выбери|прокрути|полистай|удали|переустанови|почини|исправь)\b",
+        r"напиши|скинь|посмотри|проверь|прочитай|включи|вруби|воспроизведи|выключи|поставь|"
+        r"продолжи|нажми|выбери|прокрути|полистай|удали|переустанови|почини|исправь|сделай)\b",
         re.I,
     )
     PAGE_LOCAL = re.compile(
@@ -69,7 +66,14 @@ class ReliabilityRouter:
     def norm(text: Any) -> str:
         value = str(text or "").casefold().replace("ё", "е")
         value = re.sub(r"[^a-zа-я0-9._@:+/-]+", " ", value)
-        return re.sub(r"\s+", " ", value).strip()
+        value = re.sub(r"\s+", " ", value).strip()
+        value = re.sub(
+            r"^(?:(?:eirven|eirwen|эрви|эйрви|эйрвен|эйрвэн|эрвен|ирвен)\s+)+",
+            "", value, flags=re.I,
+        )
+        value = re.sub(r"^(?:(?:пожалуйста|плиз|слушай|ну|эй)\s+)+", "", value, flags=re.I)
+        value = re.sub(r"\s+(?:пожалуйста|плиз)$", "", value, flags=re.I)
+        return value.strip()
 
     def apps(self, text: str) -> list[str]:
         return [name for name, pattern in self.APP_PATTERNS if pattern.search(text)]
@@ -81,7 +85,10 @@ class ReliabilityRouter:
         mentioning Telegram later in a sentence must not steal a cross-app mission.
         """
         for app, pattern in self.APP_PATTERNS:
-            m = re.match(r"^\s*(?:открой|запусти|включи)\s+(.+)$", clean, re.I)
+            m = re.match(
+                r"^\s*(?:открой|запусти|включи|вруби|зайди|перейди)\s+(?:в\s+|на\s+)?(.+)$",
+                clean, re.I,
+            )
             if not m:
                 continue
             rest = m.group(1).strip()
@@ -117,25 +124,21 @@ class ReliabilityRouter:
         if collection and re.search(r"\b(?:ответ|напиш|обработ)\w*", clean, re.I):
             return ReliabilityDecision("mission", reason="bounded collection task", confidence=.99)
         explicit_app, tail = self._app_open(clean)
-<<<<<<< HEAD
-=======
         if (
             not explicit_app and mentioned == ["telegram"]
-            and re.match(r"^(?:открой|запусти|включи)\b", clean, re.I)
-            and re.search(r"\b(?:напиши|отправь|скинь)\w*", clean, re.I)
+            and re.search(r"\b(?:напиши|отправь|скинь|пошли)\w*", clean, re.I)
         ):
             # Natural voice order can put the platform at the end: ``открой и напиши
             # Тиме привет в Telegram``.  It is still one deterministic Telegram action,
             # not an application literally named ``и напиши ...``.
             remainder=re.sub(
-                r"^(?:открой|запусти|включи)\w*\s*(?:и\s+)?", "", clean,
+                r"^(?:открой|запусти|включи|вруби)\w*\s*(?:и\s+)?", "", clean,
                 count=1, flags=re.I,
             ).strip()
             return ReliabilityDecision(
                 "app_compound", app="telegram", remainder=remainder,
                 reason="telegram platform follows send action", confidence=.98,
             )
->>>>>>> b48a166 (fix: repair mini orb, autostart and Telegram sending)
         if len(set(mentioned)) >= 2:
             return ReliabilityDecision("mission", reason="multiple app surfaces", confidence=.99)
         if explicit_app:
@@ -146,7 +149,17 @@ class ReliabilityRouter:
                 return ReliabilityDecision("app_compound", app=explicit_app, remainder=tail, reason="explicit app with content request", confidence=.97)
             return ReliabilityDecision("app_open", app=explicit_app, reason="explicit app open", confidence=.99)
 
-        actions = len(self.ACTION.findall(clean))
+        action_matches = list(self.ACTION.finditer(clean))
+        actions = len(action_matches)
+        # Two owner imperatives joined in one utterance are already a mission. The old
+        # three-action threshold collapsed ``включи музыку и открой тг`` into a fuzzy
+        # request to open an application literally called "музыку и открой тг".
+        two_action_chain = any(
+            re.search(r"\b(?:и|а\s+потом|потом|затем|далее)\b", clean[left.end():right.start()], re.I)
+            for left, right in zip(action_matches, action_matches[1:])
+        )
+        if two_action_chain:
+            return ReliabilityDecision("mission", reason="two explicit joined actions", confidence=.98)
         if actions >= 3 or re.search(r"\b(?:потом|затем|после\s+этого|параллельно|одновременно)\b", clean):
             return ReliabilityDecision("mission", reason="long-horizon structure", confidence=.96)
 
@@ -169,7 +182,7 @@ class ReliabilityRouter:
 
         # A bare request to start music is a media goal, not an application-name lookup.
         # It uses the configured/default music surface and is therefore deterministic.
-        if re.fullmatch(r"(?:включи|запусти|поставь|воспроизведи)\s+(?:мне\s+)?(?:музык\w*|песн\w*|трек\w*)", clean, re.I):
+        if re.fullmatch(r"(?:включи|вруби|запусти|поставь|воспроизведи)\s+(?:мне\s+)?(?:музык\w*|песн\w*|трек\w*)", clean, re.I):
             return ReliabilityDecision("media_start", app="yandex_music", reason="generic music playback", confidence=.98, verb="включи")
 
         # Player transport/control phrases must remain controls even while a media page

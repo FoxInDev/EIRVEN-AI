@@ -114,6 +114,10 @@ async def lifespan(app):
         watchdog_stop.set()
     services.chat_jobs.stop()
     services.tasks.stop()
+    try:
+        services.video.stop()
+    except Exception:
+        pass
     services.companion.stop()
     if services.proactive is not None:
         try:
@@ -152,7 +156,12 @@ app.mount("/ui", StaticFiles(directory=web_dir, html=True), name="ui")
 
 
 def main() -> None:
-    url = f"http://{services.settings.host}:{services.settings.port}/ui/"
+    browser_host = (
+        "127.0.0.1"
+        if services.settings.host in {"0.0.0.0", "::"}
+        else services.settings.host
+    )
+    url = f"http://{browser_host}:{services.settings.port}/ui/"
     if os.getenv("EIRVEN_OPEN_BROWSER", "false").strip().lower() not in {"0", "false", "no"}:
         threading.Timer(1.2, lambda: open_system_url(url)).start()
     uvicorn.run(

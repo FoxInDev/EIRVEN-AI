@@ -30,6 +30,7 @@ from .dialogue import (
     is_affirmative_confirmation,
     is_cancel_confirmation,
     is_chat_pairing_request,
+    is_mobile_app_setup_request,
     is_pc_shutdown_cancel_request,
     is_pc_shutdown_request,
     is_phone_setup_request,
@@ -101,6 +102,7 @@ class ChatService:
         self.mission_engine: Any = None
         self.cognition: Any = None
         self.telegram: Any = None
+        self.video: Any = None
         self.reliability_router = ReliabilityRouter()
 
     def attach_runtime(
@@ -465,7 +467,10 @@ class ChatService:
             "читать файлы' или 'не умеет управлять компьютером'. Если в истории уже есть сообщение о том, "
             "что инструмент выполнил действие, считай его фактом. Если действие нужно выполнить, его "
             "маршрутизирует исполнитель; твоя задача — сохранять единую личность и контекст, а не отрицать "
-            "возможности инструментального слоя."
+            "возможности инструментального слоя. EIRVEN также реально монтирует видео через локальный FFmpeg: "
+            "исходники кладут в папку video в корне EIRVEN, после чего можно обычными словами попросить склейку, "
+            "обрезку, улучшение, конвертацию и другую обработку. На вопрос о монтаже уверенно говори, что умеешь, "
+            "и объясняй этот простой порядок; не отправляй пользователя искать профессиональную программу."
         )
         history = self.memory.history(conversation_id, limit=18)
         messages: list[dict[str, Any]] = [{"role": "system", "content": system}]
@@ -933,7 +938,7 @@ class ChatService:
         text=re.sub(r"\s+"," ",target).strip(" .,!?:-")
         # recipient [in Telegram] [message] content. The command verb is already stripped.
         platform=""
-        pm=re.search(r"\b(?:в|через)\s+(телеграм(?:е|м)?|telegram|тг)\b",text,re.I)
+        pm=re.search(r"\b(?:в|через)\s+(телег\w*|telegram|тг)\b",text,re.I)
         if pm:
             platform=pm.group(1).casefold(); text=(text[:pm.start()]+" "+text[pm.end():]).strip()
         m=re.match(r"(.+?)\s+(?:сообщение|сообщуху|текст)\s*[,;:\-]?\s*(.*)$",text,re.I)
@@ -953,6 +958,11 @@ class ChatService:
             "артему":"артем","артёму":"артём",
             "диме":"дима","саше":"саша",
             "павлу":"павел","даниилу":"даниил",
+            "маше":"маша","анне":"анна","наташе":"наташа",
+            "кате":"катя","лене":"лена","оле":"оля","юле":"юля",
+            "мише":"миша","никите":"никита","егору":"егор",
+            "сергею":"сергей","алексею":"алексей","андрею":"андрей",
+            "максиму":"максим","роману":"роман",
         }
         recipient=recipient_alias.get(recipient.casefold(),recipient)
         return recipient,platform,message
@@ -961,15 +971,18 @@ class ChatService:
     def _parse_telegram_command(text: str) -> tuple[str, str]:
         """Extract recipient/message without ever treating grammar words as contacts."""
         raw = re.sub(r"\s+", " ", str(text or "")).strip(" .,!?:-")
-<<<<<<< HEAD
-=======
         # Voice commands may name Telegram after the payload.  Remove only that trailing
         # platform qualifier so it cannot become the literal message text.
         raw = re.sub(
-            r"\s+(?:в|через)\s+(?:telegram|т?елеграм\w*|тг)\s*$", "", raw,
+            r"\s+(?:в|через)\s+(?:telegram|телег\w*|тг)\s*$", "", raw,
             flags=re.I,
         ).strip()
->>>>>>> b48a166 (fix: repair mini orb, autostart and Telegram sending)
+        # A platform between recipient and the explicit message marker is routing
+        # syntax, not text to send.
+        raw = re.sub(
+            r"\s+(?:в|через)\s+(?:telegram|телег\w*|тг)\s+(?=(?:сообщение|сообщуху|текст)\b)",
+            " ", raw, flags=re.I,
+        )
         saved = r"(?:избранн\w*|saved\s+messages|сохраненн\w*\s+сообщен\w*)"
         # Message first: ``отправь сообщение привет мне в Избранное``.
         m = re.search(
@@ -1012,11 +1025,7 @@ class ChatService:
         message = m.group(2).strip().strip("«»\"'")
         reserved = {
             "сообщение", "текст", "файл", "всем", "все", "всё", "мне", "кому",
-<<<<<<< HEAD
-            "telegram", "телеграм", "телеграмм", "тг",
-=======
             "telegram", "телеграм", "телеграмм", "елеграм", "тг",
->>>>>>> b48a166 (fix: repair mini orb, autostart and Telegram sending)
         }
         if recipient.casefold().replace("ё", "е") in {x.replace("ё", "е") for x in reserved}:
             return "", message
@@ -1490,9 +1499,56 @@ class ChatService:
             "могу найти баг в реальной папке проекта, изменить код и прогнать проверку; проблемы приложений могу "
             "диагностировать по процессам, экрану, локальным данным и логам, а по явной просьбе — переустановить "
             "однозначно найденное приложение. Длинные задачи умеют переносить найденный текст или файл между шагами, "
-            "например из МЭШ в Избранное Telegram. В фоне замечаю долгий просмотр видео, зависшие окна и видимые ошибки. "
+            "например из МЭШ в Избранное Telegram. Ещё я умею реально монтировать и обрабатывать видео через локальный "
+            "FFmpeg: склеивать, обрезать, менять качество, формат, скорость, звук, кадр и добавлять текст. Для этого положи "
+            "исходники в папку video рядом с EIRVEN и скажи обычными словами, что сделать. В фоне замечаю долгий просмотр "
+            "видео, зависшие окна и видимые ошибки. "
             "Логин, CAPTCHA, 2FA/UAC и физические действия владельца остаются ручными точками, если Windows или сервис их требуют."
         )
+
+    def _video_turn(self, query: str, conversation_id: str) -> tuple[bool, str, dict[str, Any]]:
+        video = getattr(self, "video", None)
+        if video is None or not video.is_relevant(query, conversation_id):
+            return False, "", {}
+        clean = " ".join(str(query or "").casefold().replace("ё", "е").split())
+        if re.search(r"\b(?:останови|отмени|прекрати)\w*\b.{0,25}\b(?:монтаж|обработк|видео)\w*", clean):
+            task = self.tasks.latest(kind="video_edit", conversation_id=conversation_id) if self.tasks is not None else None
+            if task and task.get("status") in {"queued", "running", "waiting_user"}:
+                cancelled = bool(self.tasks.cancel(str(task.get("id") or "")))
+                return True, ("Остановила обработку видео. Исходники остались в папке video." if cancelled else "Обработка уже завершилась."), {
+                    "action": "video_cancel", "model": "deterministic", "control_plane": True,
+                    "task_id": task.get("id"), "cancelled": cancelled,
+                }
+        try:
+            outcome = dict(video.handle_query(query, conversation_id) or {})
+        except Exception as exc:
+            return True, f"Не смогла подготовить видеопроект: {exc}. Исходники не удалены.", {
+                "action": "video_prepare_error", "model": "video-ffmpeg", "control_plane": True,
+                "error": str(exc),
+            }
+        if not outcome.get("handled"):
+            return False, "", {}
+        answer = str(outcome.get("answer") or "")
+        route = dict(outcome.get("route") or {"action": "video", "model": "video-ffmpeg"})
+        enqueue = outcome.get("enqueue")
+        if isinstance(enqueue, dict):
+            if self.tasks is None:
+                return True, "Видеопроект подготовлен, но фоновая очередь задач недоступна. Перезапусти EIRVEN и повтори команду.", {
+                    **route, "action": "video_queue_unavailable", "completed": False,
+                }
+            try:
+                task_id = self.tasks.enqueue(
+                    "video_edit",
+                    f"Монтаж видео: {query[:120]}",
+                    enqueue,
+                    conversation_id=conversation_id,
+                )
+                video.mark_queued(str(enqueue.get("project_id") or ""), task_id)
+                route.update({"task_id": task_id, "kind": "video_edit", "completed": False})
+            except Exception as exc:
+                answer = f"Файлы подготовила, но не смогла поставить монтаж в очередь: {exc}. Исходники сохранены."
+                route.update({"action": "video_queue_error", "error": str(exc), "completed": False})
+        return True, answer, route
 
     def _r22_open_external(self, target: str) -> tuple[bool, str, dict[str, Any]]:
         target=str(target or "").strip()
@@ -1807,6 +1863,15 @@ class ChatService:
         return complete, False, "", {"action": "publish_brief_complete", "model": "deterministic", "needs_user": False}, paths
 
     def _phone_guidance_turn(self, query: str, conversation_id: str) -> tuple[bool, str, dict[str, Any]]:
+        if is_mobile_app_setup_request(query):
+            return True, (
+                "Открыла «Настройки → Телефон». В приложении EIRVEN Mobile введи показанные там "
+                "адрес компьютера и код подключения. Телефон и компьютер должны быть в одной домашней "
+                "Wi‑Fi сети. Если Windows спросит про брандмауэр, разреши доступ только для частной сети."
+            ), {
+                "action": "mobile_app_setup_guide", "model": "deterministic",
+                "control_plane": True, "open_settings_tab": "mobile", "needs_user": True,
+            }
         telegram = getattr(self, "telegram", None)
         if telegram is None:
             return False, "", {}
@@ -3267,6 +3332,11 @@ class ChatService:
             return f"Я {name}."
         if normalized in {"что ты умеешь", "что умеешь", "что ты можешь", "какие у тебя возможности"}:
             return self._r22_capabilities_answer()
+        if normalized in {
+            "ты умеешь гуглить", "умеешь гуглить", "ты можешь гуглить", "можешь гуглить",
+            "ты умеешь искать в интернете", "умеешь искать в интернете",
+        }:
+            return "Да. Могу искать в интернете, сверять несколько источников и открывать найденные страницы."
         if normalized in {"который час", "сколько времени", "который сейчас час", "сколько сейчас времени"}:
             return time_phrase()
         if normalized in {"какое сегодня число", "какая сегодня дата", "сегодня какое число"}:
@@ -3383,6 +3453,29 @@ class ChatService:
                 try:self.runtime.finish(answer,ok=not answer.startswith("Не удалось"))
                 except Exception:pass
             return
+
+        # Video editing has its own file manifest, clarification state and FFmpeg
+        # verifier. It must run before the generic desktop/mission routers, otherwise
+        # phrases such as "склей первое и второе видео" are mistaken for UI clicks or
+        # media playback. Text, voice and Telegram all pass through this same lane.
+        if not image_paths:
+            video_acted, video_answer, video_route = self._video_turn(query, conversation_id)
+            if video_acted:
+                video_answer = self.enforce_gender(video_answer)
+                if persist_user:
+                    self.memory.add_message(conversation_id, "user", query, metadata={"images": [], "attachments": attachment_paths or []})
+                    if self.settings.auto_memory:
+                        self.memory.remember_from_message(query)
+                if persist_assistant and video_answer:
+                    self.memory.add_message(conversation_id, "assistant", video_answer, metadata={"model": video_route.get("model", "video-ffmpeg"), "route": video_route})
+                yield {"type": "start", "conversation_id": conversation_id, "route": video_route}
+                if video_answer:
+                    yield {"type": "token", "content": video_answer, "full": video_answer}
+                yield {"type": "done", "conversation_id": conversation_id, "answer": video_answer, "metrics": {"model": video_route.get("model", "video-ffmpeg"), "total_seconds": round(time.monotonic()-request_started, 3)}, "stopped": False, "route": video_route}
+                if self.runtime is not None:
+                    try: self.runtime.finish(video_answer, ok=not video_route.get("error"))
+                    except Exception: pass
+                return
 
         # r15.5 control plane: cancellation and foreground media must be resolved before
         # intent detection/planning. Otherwise obvious commands such as "поставь на
@@ -3764,7 +3857,10 @@ class ChatService:
                     answer += chunk
                     yield {"type": "token", "content": chunk, "full": answer}
             except LLMError as exc:
-                yield {"type": "error", "message": f"Ошибка локальной модели: {exc}"}
+                self._trace("CHAT_LLM_RECOVERED", query=query, model=route.model, error=str(exc)[:500])
+                if not answer:
+                    answer = "Сейчас не получилось сформировать ответ. Повтори вопрос — я попробую ещё раз."
+                    yield {"type": "token", "content": answer, "full": answer}
             finally:
                 with self._lock:
                     if self._stop_events.get(conversation_id) is stop_event:
