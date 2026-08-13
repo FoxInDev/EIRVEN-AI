@@ -1,0 +1,12 @@
+EIRVEN SOURCE CODE LICENSE NOTICE
+
+EIRVEN-owned source code in the current licensed branch is provided under:
+
+    GNU Affero General Public License v3.0 or later
+    SPDX-License-Identifier: AGPL-3.0-or-later
+
+See the repository root LICENSE file for the full text.
+
+Modified covered versions must comply with the GNU AGPL, including the source-code obligations applicable to distribution and, for modified versions that support remote network interaction, AGPL section 13.
+
+Third-party components, model assets, datasets, and source texts are not automatically relicensed under the EIRVEN software license. See LICENSING.md and THIRD_PARTY_NOTICES.md.
