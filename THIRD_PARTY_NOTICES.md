@@ -1,6 +1,6 @@
 # Third-party notices — EIRVEN AI 1.7.3
 
-EIRVEN source code is distributed under the MIT License. Runtime models and dependencies remain governed by their upstream licenses.
+EIRVEN-owned source code in the current and future licensed branch is distributed under the GNU Affero General Public License v3.0 or later (AGPL-3.0-or-later). Earlier EIRVEN releases that were already distributed under MIT remain usable under the license terms under which those copies were received. Runtime models, datasets, bundled third-party code, and dependencies remain governed by their respective upstream licenses and notices.
 
 - Local Ollama models — downloaded by the installer from their upstream distribution; not embedded in this source archive.
 - Claude Code CLI — installed separately from Anthropic's official distribution and used as a local orchestration client pointed at Ollama; the proprietary Claude model weights are not bundled or represented as local.
@@ -29,3 +29,13 @@ Optional developer-only multilingual speech synthesis via `chatterbox-tts` (Rese
 ## Edge TTS
 
 Legacy compatibility code can recognize an `edge-tts` installation, but the supported public installation neither downloads nor selects this network-backed path.
+
+## Embedded EIRVEN Education release assets (v2.6.6+)
+
+The owner-built portable Education release may embed these assets directly in the public ZIP so end users do not need to download the main model or Education RAG again:
+
+- **Qwen3-8B-Base** (`Qwen/Qwen3-8B-Base`) — upstream Qwen open-weight model, Apache License 2.0. The EIRVEN owner pipeline trains a QLoRA adapter, merges it into the Qwen3-8B base, and distributes the resulting quantized GGUF as a derivative model. Keep `release_assets/QWEN3_MODEL_LICENSE.txt` with redistributed model archives.
+- **RuHeritage-Corpus** (`maxzt/RuHeritage-Corpus`) — the EIRVEN Education source notes identify the dataset curation as CC BY 4.0 and the underlying literary works as public domain. Preserve source attribution when redistributing the built RAG database.
+- **Russian-PD** (`PleIAs/Russian-PD`) — the EIRVEN Education source notes identify this corpus as public-domain material intended for model training/republication.
+
+The portable RAG is a SQLite FTS5 index built from the Russian Education library. It contains source text excerpts, so corpus/source provenance and applicable source-license notices must stay with the release archive. The RAG is used for retrieval only; the current EIRVEN StyleDNA setting controls response tone and presentation.
