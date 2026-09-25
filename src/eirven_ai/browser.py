@@ -1,3 +1,8 @@
+# EIRVEN AI — 2.4.0
+# Copyright (c) 2026 Даниил Павлов. Все права защищены. / All rights reserved.
+# Лицензия: EIRVEN Non-Commercial License — см. файл LICENSE.
+# Обязательна видимая подпись «На базе Эрви». Скрывать её запрещено (см. LICENSE).
+# EIRVEN-LICENSE-HEADER
 from __future__ import annotations
 
 import re
@@ -222,6 +227,27 @@ class BrowserAutomation:
 
 
     @staticmethod
+    def _official_host_grounded(target: str, href: str) -> bool:
+        needle = re.sub(r"[^a-zа-я0-9]+", " ", str(target or "").casefold()).strip()
+        tokens = [
+            token for token in needle.split()
+            if len(token) >= 3 and token not in {"приложение", "app", "web", "официальный", "сайт"}
+        ]
+        host = (urlparse(str(href or "")).hostname or "").casefold().removeprefix("www.")
+        labels = [label for label in host.split(".") if label]
+        if not tokens or len(labels) < 2:
+            return False
+        common_second_level = {"co", "com", "org", "net", "gov", "ac"}
+        registrable = labels[-2]
+        if len(labels) >= 3 and len(labels[-1]) == 2 and labels[-2] in common_second_level:
+            registrable = labels[-3]
+        return any(
+            token in registrable or registrable in token
+            or SequenceMatcher(None, token, registrable).ratio() >= 0.76
+            for token in tokens
+        )
+
+    @staticmethod
     def _official_score(target: str, title: str, href: str) -> float:
         needle = re.sub(r"[^a-zа-я0-9]+", " ", target.casefold()).strip()
         hay = f"{title} {href}".casefold()
@@ -244,13 +270,43 @@ class BrowserAutomation:
         # destination for a generic "открой сайт BRAND" request.
         if any(x in host for x in (
             "pinterest.", "instagram.", "facebook.", "vk.com", "tiktok.", "youtube.",
-            "wikipedia.org", "softonic", "uptodown", "4pda", "github.com",
+            "wikipedia.org", "softonic", "uptodown", "4pda",
             "market.yandex", "ozon.", "wildberries.",
         )):
             score -= 7.0
+        if not BrowserAutomation._official_host_grounded(target, href):
+            score -= 30.0
+        path_segments = [segment.casefold() for segment in urlparse(href).path.split("/") if segment]
+        account_or_support = {
+            "auth", "oauth", "login", "log-in", "signin", "sign-in", "signup", "sign-up",
+            "register", "forgot", "reset", "password", "logout", "support", "help", "article",
+        }
+        if any(segment in account_or_support for segment in path_segments):
+            score -= 12.0
+        elif not path_segments:
+            score += 2.0
+        else:
+            score -= min(3, len(path_segments)) * 0.35
         return score
 
-    def search_first_site(self, query: str, *, open_visible: bool = True) -> dict[str, Any]:
+    @staticmethod
+    def _service_entry_url(href: str) -> str:
+        """Avoid landing an arbitrary service request on auth/support recovery pages."""
+        parsed = urlparse(str(href or ""))
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            return str(href or "")
+        segments = [segment.casefold() for segment in parsed.path.split("/") if segment]
+        account_or_support = {
+            "auth", "oauth", "login", "log-in", "signin", "sign-in", "signup", "sign-up",
+            "register", "forgot", "reset", "password", "logout", "support", "help", "article",
+        }
+        if any(segment in account_or_support for segment in segments):
+            return parsed._replace(path="/", query="", fragment="").geturl()
+        return str(href or "")
+
+    def search_first_site(
+        self, query: str, *, open_visible: bool = True, prefer_service_entry: bool = False,
+    ) -> dict[str, Any]:
         """Search without an API key and open the best actual result, not the SERP."""
         try:
             from ddgs import DDGS
@@ -265,13 +321,23 @@ class BrowserAutomation:
             candidates.append((self._official_score(query,title,href), title, href))
         if not candidates:
             raise BrowserError("Поиск не вернул подходящий сайт")
+        grounded = [row for row in candidates if self._official_host_grounded(query, row[2])]
+        if not grounded:
+            raise BrowserError("Поиск не вернул сайт с доменом, подтверждающим название сервиса")
+        candidates = grounded
         candidates.sort(key=lambda x:x[0], reverse=True)
         _, title, href=candidates[0]
+        discovered_href = href
+        if prefer_service_entry:
+            href = self._service_entry_url(href)
         if open_visible:
             open_system_url(href)
         else:
             self.open(href)
-        return {"url":href,"title":title,"query":query,"results":len(candidates)}
+        return {
+            "url": href, "title": title, "query": query, "results": len(candidates),
+            "discovered_url": discovered_href if discovered_href != href else "",
+        }
 
     def weather(self, location: str = "") -> dict[str, Any]:
         """Current weather without API keys; wttr.in auto-locates when city is omitted."""

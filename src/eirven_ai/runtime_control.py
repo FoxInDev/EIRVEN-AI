@@ -1,3 +1,8 @@
+# EIRVEN AI — 2.4.0
+# Copyright (c) 2026 Даниил Павлов. Все права защищены. / All rights reserved.
+# Лицензия: EIRVEN Non-Commercial License — см. файл LICENSE.
+# Обязательна видимая подпись «На базе Эрви». Скрывать её запрещено (см. LICENSE).
+# EIRVEN-LICENSE-HEADER
 from __future__ import annotations
 
 import gc
@@ -39,6 +44,7 @@ class RuntimeControl:
         self._cancel = threading.Event()
         self._paused = False
         self._activity = ActivitySnapshot(updated_at=time.time())
+        self._activity_thread_id = 0
         self._perf: deque[dict[str, Any]] = deque(maxlen=120)
         self._camera_reset_lock = threading.Lock()
         # A user starting to speak while an interactive task is in flight is a
@@ -60,6 +66,14 @@ class RuntimeControl:
             generation = self._generation
             self._voice_hold.clear()
             self._voice_hold_started = 0.0
+        services = self.services
+        if services is not None:
+            try:
+                proactive = getattr(services, "proactive", None)
+                if proactive is not None:
+                    proactive.resume("owner_turn")
+            except Exception:
+                pass
         self._log("RUNTIME_INTERRUPT", generation=generation, query=str(text)[:400])
         return generation, self._cancel
 
@@ -79,6 +93,7 @@ class RuntimeControl:
                 action=action or "work", goal=str(goal)[:500], step="Запуск", lane=lane,
                 started_at=now, updated_at=now, cancellable=cancellable, paused=self._paused,
             )
+            self._activity_thread_id = threading.get_ident()
         self._log("RUNTIME_BEGIN", generation=generation, action=action, goal=str(goal)[:800], lane=lane)
         return generation
 
@@ -86,23 +101,40 @@ class RuntimeControl:
         now = time.time()
         with self._lock:
             activity = self._activity
+            supplied_generation = data.pop("generation", None)
+            if supplied_generation is not None and int(supplied_generation) != self._generation:
+                return
+            # ToolExecutor is shared with proactive/background observers.  Only the
+            # thread that began the active interactive generation may update its UI
+            # status.  Once stopped/finished, late tool observations are ignored.
+            if not activity.cancellable or (
+                self._activity_thread_id and self._activity_thread_id != threading.get_ident()
+            ):
+                return
             activity.step = str(text)[:500]
             activity.updated_at = now
             if activity.started_at:
                 activity.elapsed_ms = int((now - activity.started_at) * 1000)
         self._log("RUNTIME_STEP", step=str(text)[:500], **data)
 
-    def finish(self, result: str = "", *, ok: bool = True) -> None:
+    def finish(self, result: str = "", *, ok: bool = True, generation: int | None = None) -> bool:
         now = time.time()
         with self._lock:
+            if generation is not None and int(generation) != self._generation:
+                return False
             activity = self._activity
             if activity.started_at:
                 activity.elapsed_ms = int((now - activity.started_at) * 1000)
             activity.updated_at = now
-            activity.step = "Готово" if ok else "Ошибка"
+            activity.step = "Результат подтверждён" if ok else "Ошибка"
             activity.last_result = str(result)[:800]
             activity.cancellable = False
+            activity.action = "idle"
+            activity.goal = ""
+            activity.lane = "idle"
+            self._activity_thread_id = 0
         self._log("RUNTIME_END", ok=ok, result=str(result)[:1000], elapsed_ms=self._activity.elapsed_ms)
+        return True
 
     def status(self) -> dict[str, Any]:
         with self._lock:
@@ -132,7 +164,12 @@ class RuntimeControl:
             self._cancel = threading.Event()
             self._activity.cancellable = False
             self._activity.step = "Остановлено"
+            self._activity.action = "idle"
+            self._activity.goal = ""
+            self._activity.lane = "idle"
+            self._activity.last_result = "Остановлено пользователем"
             self._activity.updated_at = time.time()
+            self._activity_thread_id = 0
             self._voice_hold.clear()
             self._voice_hold_started = 0.0
         services = self.services
@@ -168,7 +205,7 @@ class RuntimeControl:
         with self._lock:
             active = bool(
                 self._activity.cancellable
-                and self._activity.step not in {"Готово", "Ошибка", "Остановлено"}
+                and self._activity.step not in {"Результат подтверждён", "Ошибка", "Остановлено"}
             )
             if not active:
                 return False
@@ -201,6 +238,12 @@ class RuntimeControl:
         cancelled = 0
         services = self.services
         if services is not None:
+            try:
+                proactive = getattr(services, "proactive", None)
+                if proactive is not None:
+                    proactive.pause("stop_all")
+            except Exception:
+                pass
             try:
                 for task in services.tasks.list(500):
                     if task.get("status") in {"queued", "running", "waiting_user"}:

@@ -1,3 +1,8 @@
+# EIRVEN AI — 2.4.0
+# Copyright (c) 2026 Даниил Павлов. Все права защищены. / All rights reserved.
+# Лицензия: EIRVEN Non-Commercial License — см. файл LICENSE.
+# Обязательна видимая подпись «На базе Эрви». Скрывать её запрещено (см. LICENSE).
+# EIRVEN-LICENSE-HEADER
 from __future__ import annotations
 
 import json
@@ -6,6 +11,8 @@ import platform
 import shutil
 import subprocess
 from dataclasses import asdict, dataclass
+
+from .release_policy import TEXT_MODEL, VISION_MODEL
 from typing import Any
 
 
@@ -25,6 +32,10 @@ class HardwareProfile:
     recommended_vision_model: str
     recommended_whisper_model: str
     tier: str
+    runtime_mode: str
+    recommended_parallelism: int
+    quality_profile: str
+    supported_local: bool
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -35,6 +46,7 @@ def _run(command: list[str], timeout: int = 8) -> str:
         completed = subprocess.run(
             command, capture_output=True, text=True, encoding="utf-8", errors="replace",
             timeout=timeout, shell=False,
+            creationflags=(getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0),
         )
         if completed.returncode == 0:
             return completed.stdout.strip()
@@ -97,11 +109,11 @@ def _gpu_info() -> tuple[str, float, bool]:
 
 
 def detect_hardware() -> HardwareProfile:
-    """Choose latency-first local models and reserve heavy models for hard work.
+    """Choose the largest responsive local profile that fits this computer.
 
-    Interactive desktop control must stay on a small resident multimodal model. Larger
-    models are selected only for normal/deep work so a request such as "open Telegram"
-    never pays a 20B+ model load penalty.
+    Keeping the working model inside GPU/RAM is materially faster than forcing one
+    oversized checkpoint on every owner.  Qwen 3.5 keeps chat, code, planning and
+    vision on one family, so changing computer class does not change capabilities.
     """
     ram = _memory_gb()
     gpu, vram, cuda = _gpu_info()
@@ -113,49 +125,47 @@ def detect_hardware() -> HardwareProfile:
     except Exception:
         pass
 
-    if vram >= 20 and ram >= 48:
-        tier = "power"
-        fast, main, code, vision = "qwen3.5:4b", "qwen3.5:9b", "devstral:24b", "qwen3.5:4b"
-        whisper = "large-v3-turbo"
-    elif vram >= 10 and ram >= 24:
-        tier = "balanced"
-        fast, main, code, vision = "qwen3.5:4b", "qwen3.5:9b", "qwen3.5:9b", "qwen3.5:4b"
-        whisper = "large-v3-turbo"
-    elif vram >= 7.5 and ram >= 24:
-        tier = "balanced"
-        # 8-GB cards get one resident edge model for chat, intent, tools and vision.
-        # Keeping fast/main identical avoids the model swaps that dominated first-turn
-        # latency in the attached RTX 3070 Ti trace. Code/deep lanes stay on demand.
-        fast = main = vision = "gemma4:e2b"
-        code = "qwen3.5:4b"
-        whisper = "large-v3-turbo"
-    elif ram >= 28:
-        tier = "balanced"
-        # 32-GB-class laptops with 4-GB mobile GPUs need a smaller always-hot lane.
-        # Keep Qwen 2B resident for immediate dialogue/tool routing, Gemma 4B for
-        # richer non-trivial chat, and gpt-oss only for explicit deep/background work.
-        fast, main, code, vision = "qwen3.5:2b", "gemma3:4b", "qwen3.5:4b", "moondream:1.8b-v2-q4_0"
-        whisper = "large-v3-turbo"
-    elif ram >= 16:
-        tier = "standard"
-        fast = main = code = vision = "gemma3:4b"
-        whisper = "large-v3-turbo"
+    is_apple_silicon = platform.system() == "Darwin" and platform.machine().casefold() in {"arm64", "aarch64"}
+    if is_apple_silicon and ram >= 24:
+        main_model, fast_model, tier, runtime_mode = "qwen3.5:9b", "qwen3.5:4b", "quality", "apple_silicon"
+    elif is_apple_silicon and ram >= 12:
+        main_model, fast_model, tier, runtime_mode = "qwen3.5:4b", "qwen3.5:2b", "balanced", "apple_silicon"
+    elif is_apple_silicon:
+        main_model, fast_model, tier, runtime_mode = "qwen3.5:2b", "qwen3.5:2b", "compact", "apple_silicon"
+    elif vram >= 22 and ram >= 32:
+        main_model, fast_model, tier, runtime_mode = "qwen3.5:27b", "qwen3.5:9b", "ultra", "gpu_resident"
+    elif vram >= 7 and ram >= 16:
+        # A single Qwen 3.5 checkpoint owns chat, tool planning and vision on an 8 GB
+        # card.  Ollama intentionally permits only one resident model on this tier;
+        # alternating 4B admission/vision with a 9B planner evicted the warm model and
+        # added an observed 8-9 second load before almost every action.  The 4B model
+        # is multimodal and tool-capable, stays fully on this GPU, and produces its
+        # first useful text/vision result inside the interactive budget.  Keeping one
+        # capable model is also more reliable than trying to predict a route before the
+        # model has understood the request.
+        main_model, fast_model, tier, runtime_mode = "qwen3.5:4b", "qwen3.5:4b", "responsive", "gpu_resident"
+    elif vram >= 4.5 or (ram >= 24 and physical >= 8):
+        main_model, fast_model, tier = "qwen3.5:4b", "qwen3.5:2b", "balanced"
+        runtime_mode = "gpu_resident" if vram >= 4.5 else "cpu_optimized"
     else:
-        tier = "light"
-        fast, main, code, vision = "qwen3.5:0.8b", "qwen3.5:2b", "qwen3.5:2b", "moondream:1.8b-v2-q4_0"
-        whisper = "base"
-
-    # Vision is the most memory-sensitive lane. A 4-GB mobile GPU must never try
-    # to reserve a 4B/9B vision context; Ollama can otherwise attempt multi-GB CUDA
-    # allocations and poison latency for every later turn. Keep a disposable 0.8B VLM
-    # for <=6 GB VRAM while retaining the strongest sensible text/deep models in RAM.
-    if vram and vram <= 6.0:
-        vision = "moondream:1.8b-v2-q4_0"
+        main_model, fast_model, tier, runtime_mode = "qwen3.5:2b", "qwen3.5:2b", "compact", "low_memory"
+    vision = fast_model
+    parallel = 2 if vram >= 12 and ram >= 24 else 1
+    quality_profile = f"EIRVEN_ADAPTIVE_{tier.upper()}_V3"
+    supported = ram >= 8 or vram >= 3
 
     return HardwareProfile(
         os=f"{platform.system()} {platform.release()}", cpu=_cpu_name(),
         cpu_cores=physical, cpu_threads=threads, ram_gb=ram, gpu=gpu, vram_gb=vram,
-        cuda_available=cuda, recommended_fast_model=fast, recommended_main_model=main,
-        recommended_code_model=code, recommended_vision_model=vision,
-        recommended_whisper_model=whisper, tier=tier,
+        cuda_available=cuda,
+        recommended_fast_model=fast_model,
+        recommended_main_model=main_model,
+        recommended_code_model=main_model,
+        recommended_vision_model=vision,
+        recommended_whisper_model="large-v3-turbo",
+        tier=tier,
+        runtime_mode=runtime_mode,
+        recommended_parallelism=parallel,
+        quality_profile=quality_profile,
+        supported_local=supported,
     )

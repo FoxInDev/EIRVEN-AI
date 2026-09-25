@@ -1,3 +1,8 @@
+# EIRVEN AI — 2.4.0
+# Copyright (c) 2026 Даниил Павлов. Все права защищены. / All rights reserved.
+# Лицензия: EIRVEN Non-Commercial License — см. файл LICENSE.
+# Обязательна видимая подпись «На базе Эрви». Скрывать её запрещено (см. LICENSE).
+# EIRVEN-LICENSE-HEADER
 from __future__ import annotations
 
 import json
@@ -248,6 +253,31 @@ class Database:
                 (key, encoded, now),
             )
 
+    def set_settings(self, values: dict[str, Any]) -> None:
+        """Persist a related group of settings in one SQLite transaction.
+
+        First-run setup used to save the completion flag before the profile, style and
+        permissions.  If any later request failed, the next launch skipped onboarding
+        even though only half of the choices existed.  A single transaction makes the
+        profile an all-or-nothing state transition.
+        """
+        if not values:
+            return
+        now = utc_now()
+        rows = [
+            (str(key), json.dumps(value, ensure_ascii=False), now)
+            for key, value in values.items()
+        ]
+        with self.connect() as conn:
+            conn.executemany(
+                """
+                INSERT INTO settings(key, value, updated_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at
+                """,
+                rows,
+            )
+
     def log_action(
         self,
         tool: str,
@@ -271,6 +301,26 @@ class Database:
                     utc_now(),
                 ),
             )
+            # The safety journal must remain useful without growing forever. Keep the
+            # newest 5000 actions; the user can clear all of them from Privacy.
+            conn.execute(
+                "DELETE FROM action_logs WHERE id NOT IN (SELECT id FROM action_logs ORDER BY id DESC LIMIT 5000)"
+            )
+
+    def recent_action_logs(self, limit: int = 100) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                "SELECT id,tool,arguments,result,risk,success,created_at FROM action_logs ORDER BY id DESC LIMIT ?",
+                (max(1, min(int(limit), 500)),),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def clear_action_logs(self) -> int:
+        with self.connect() as conn:
+            row = conn.execute("SELECT COUNT(*) AS n FROM action_logs").fetchone()
+            count = int(row["n"] if row else 0)
+            conn.execute("DELETE FROM action_logs")
+        return count
 
     def add_performance_sample(
         self,

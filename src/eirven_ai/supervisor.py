@@ -1,3 +1,8 @@
+# EIRVEN AI — 2.4.0
+# Copyright (c) 2026 Даниил Павлов. Все права защищены. / All rights reserved.
+# Лицензия: EIRVEN Non-Commercial License — см. файл LICENSE.
+# Обязательна видимая подпись «На базе Эрви». Скрывать её запрещено (см. LICENSE).
+# EIRVEN-LICENSE-HEADER
 from __future__ import annotations
 
 import os
@@ -6,6 +11,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from typing import BinaryIO
 
 
 def pid_alive(pid: int) -> bool:
@@ -70,15 +76,49 @@ def is_eirven_supervisor(pid: int) -> bool:
     return "eirven_ai.supervisor" in command
 
 
+def _acquire_global_runtime_lock(root: Path) -> BinaryIO | None:
+    """Allow one EIRVEN supervisor across venv and system Python installations."""
+    try:
+        if os.name == "nt":
+            import msvcrt
+            local = os.environ.get("LOCALAPPDATA", "").strip()
+            directory = (Path(local) / "EIRVEN") if local else (root / "data")
+            directory.mkdir(parents=True, exist_ok=True)
+            handle = (directory / "runtime.lock").open("a+b")
+            handle.seek(0, os.SEEK_END)
+            if handle.tell() == 0:
+                handle.write(b"0"); handle.flush()
+            handle.seek(0)
+            msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+            return handle
+        import fcntl
+        (root / "data").mkdir(parents=True, exist_ok=True)
+        handle = (root / "data" / "runtime.lock").open("a+b")
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return handle
+    except Exception:
+        try:
+            handle.close()  # type: ignore[possibly-undefined]
+        except Exception:
+            pass
+        return None
+
+
 def main() -> int:
     root = Path(os.getenv("EIRVEN_ROOT_DIR", Path.cwd())).resolve()
     logs = root / "logs"
     logs.mkdir(parents=True, exist_ok=True)
+    runtime_lock = _acquire_global_runtime_lock(root)
+    if runtime_lock is None:
+        with (logs / "supervisor.log").open("a", encoding="utf-8") as output:
+            output.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} duplicate supervisor blocked by global runtime lock\n")
+        return 0
     supervisor_pid = logs / "supervisor.pid"
     stop_file = logs / "stop.request"
     try:
         previous = int(supervisor_pid.read_text(encoding="ascii").strip())
         if is_eirven_supervisor(previous):
+            runtime_lock.close()
             return 0
         # Dead/reused PIDs are stale state, not proof that EIRVEN is running.
         supervisor_pid.unlink(missing_ok=True)
@@ -91,12 +131,42 @@ def main() -> int:
     shutting_down = False
     child: subprocess.Popen | None = None
 
+    def _end_child_tree(proc: subprocess.Popen | None, timeout: float = 6.0) -> None:
+        """Terminate the server and everything it spawned.
+
+        proc.terminate() only ends the direct child. The API server starts its own
+        voice and TTS worker processes; those survive and keep the listening port
+        bound plus the frozen build's _MEI temp directory locked, so the next launch
+        picks a different port and Windows reports a leftover temp folder.
+        """
+        if proc is None or proc.poll() is not None:
+            return
+        if os.name == "nt":
+            try:
+                subprocess.run(
+                    ["taskkill", "/PID", str(proc.pid), "/T", "/F"],
+                    capture_output=True, timeout=timeout, check=False,
+                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                )
+            except Exception:
+                pass
+        try:
+            proc.terminate()
+        except Exception:
+            pass
+        try:
+            proc.wait(timeout=timeout)
+        except Exception:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+
     def stop_handler(*_args) -> None:
         nonlocal shutting_down
         shutting_down = True
         stop_file.touch(exist_ok=True)
-        if child and child.poll() is None:
-            child.terminate()
+        _end_child_tree(child)
 
     signal.signal(signal.SIGTERM, stop_handler)
     if hasattr(signal, "SIGINT"):
@@ -129,15 +199,7 @@ def main() -> int:
             while child.poll() is None:
                 if shutting_down or stop_file.exists():
                     shutting_down = True
-                    try:
-                        child.terminate()
-                        child.wait(timeout=3.0)
-                    except Exception:
-                        try:
-                            child.kill()
-                            child.wait(timeout=2.0)
-                        except Exception:
-                            pass
+                    _end_child_tree(child)
                     break
                 time.sleep(.12)
             code = child.poll()
@@ -160,6 +222,7 @@ def main() -> int:
     finally:
         supervisor_pid.unlink(missing_ok=True)
         stop_file.unlink(missing_ok=True)
+        runtime_lock.close()
     return 0
 
 

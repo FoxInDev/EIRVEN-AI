@@ -1,0 +1,15 @@
+{"ts":"2026-09-21 19:37:57","mono":322.874,"event":"APP_KEY_ISSUED","file":"/home/claude/ext/src/data/app.key"}
+{"ts":"2026-09-21 19:50:04","mono":125.159,"event":"APP_KEY_ISSUED","file":"/home/claude/ext/src/data/app.key"}
+{"ts":"2026-09-21 20:14:32","mono":227.433,"event":"APP_KEY_ISSUED","file":"/home/claude/ext/src/data/app.key"}
+{"ts":"2026-09-21 20:30:56","mono":213.365,"event":"APP_KEY_ISSUED","file":"/home/claude/ext/src/data/app.key"}
+{"ts":"2026-09-21 20:44:50","mono":100.34,"event":"APP_KEY_ISSUED","file":"/home/claude/ext/src/data/app.key"}
+{"ts":"2026-09-22 04:50:13","mono":275.306,"event":"APP_KEY_ISSUED","file":"/home/claude/ext/src/data/app.key"}
+{"ts":"2026-09-22 15:15:11","mono":218.292,"event":"APP_KEY_ISSUED","file":"/home/claude/ext/src/data/app.key"}
+{"ts":"2026-09-22 20:23:28","mono":671.891,"event":"APP_KEY_ISSUED","file":"/home/claude/ext/src/data/app.key"}
+{"ts":"2026-09-22 20:26:59","mono":882.842,"event":"APP_KEY_ISSUED","file":"/home/claude/ext/src/data/app.key"}
+{"ts":"2026-09-22 20:56:18","mono":660.414,"event":"APP_KEY_ISSUED","file":"/home/claude/ext/src/data/app.key"}
+{"ts":"2026-09-23 11:07:36","mono":495.551,"event":"APP_KEY_ISSUED","file":"/home/claude/ext/src/data/app.key"}
+{"ts":"2026-09-23 11:39:30","mono":327.454,"event":"APP_KEY_ISSUED","file":"/home/claude/ext/src/data/app.key"}
+{"ts":"2026-09-24 04:33:42","mono":198.625,"event":"APP_KEY_ISSUED","file":"/home/claude/ext/src/data/app.key"}
+{"ts":"2026-09-24 14:01:21","mono":444.808,"event":"APP_KEY_ISSUED","file":"/home/claude/ext/src/data/app.key"}
+{"ts":"2026-09-24 14:10:12","mono":188.717,"event":"APP_KEY_ISSUED","file":"/home/claude/ext/src/data/app.key"}

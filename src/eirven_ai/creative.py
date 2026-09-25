@@ -1,3 +1,8 @@
+# EIRVEN AI — 2.4.0
+# Copyright (c) 2026 Даниил Павлов. Все права защищены. / All rights reserved.
+# Лицензия: EIRVEN Non-Commercial License — см. файл LICENSE.
+# Обязательна видимая подпись «На базе Эрви». Скрывать её запрещено (см. LICENSE).
+# EIRVEN-LICENSE-HEADER
 from __future__ import annotations
 
 import io
@@ -92,9 +97,11 @@ class CreativeService:
             output = (logs / "photo_engine.log").open("a", encoding="utf-8")
             flags = 0
             if os.name == "nt":
-                flags = getattr(subprocess, "CREATE_NO_WINDOW", 0) | getattr(
-                    subprocess, "DETACHED_PROCESS", 0
-                )
+                # Без DETACHED_PROCESS: с ним CREATE_NO_WINDOW игнорируется, у процесса нет консоли вовсе,
+                # и КАЖДАЯ консольная программа, которую он запускает (у Ollama — проверка видеокарт и
+                # процессы моделей), открывала своё видимое окно: 20–30 окон cmd при запуске.
+                # С одним CREATE_NO_WINDOW консоль скрытая, и потомки наследуют её — окон нет.
+                flags = getattr(subprocess, "CREATE_NO_WINDOW", 0) | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
             try:
                 self._engine_process = subprocess.Popen(
                     [

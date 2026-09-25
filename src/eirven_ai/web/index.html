@@ -1,23 +1,30 @@
 <!doctype html>
+<!--
+  EIRVEN AI — 2.4.0
+  Copyright (c) 2026 Даниил Павлов. Все права защищены. / All rights reserved.
+  Лицензия: EIRVEN Non-Commercial License — см. файл LICENSE.
+  Обязательна видимая подпись «На базе Эрви». Скрывать её запрещено (см. LICENSE).
+  EIRVEN-LICENSE-HEADER
+-->
 <html lang="ru">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-  <meta name="theme-color" content="#070914">
-  <title>Эйрвен</title>
+  <meta name="theme-color" content="#03050d">
+  <title>Эрви</title>
   <link rel="icon" type="image/png" sizes="64x64" href="/ui/favicon.png">
   <link rel="apple-touch-icon" sizes="180x180" href="/ui/eirven-icon.png">
-  <link rel="stylesheet" href="/ui/styles.css">
+  <link rel="stylesheet" href="/ui/katex.min.css?v=r67&rev=envelope">
+  <link rel="stylesheet" href="/ui/eirven-ui.css?v=r70&rev=liquid-orb-1">
 </head>
 <body>
   <div class="noise"></div>
   <div class="app-shell" id="app-shell">
     <aside class="rail" aria-label="Навигация">
-      <button class="brand-orb" data-view="home" title="Эйрвен" aria-label="Эйрвен"><img src="/ui/eirven-orb.png" alt=""></button>
+      <button class="brand-orb" data-view="home" title="Эрви" aria-label="Эрви"><img src="/ui/eirven-orb.png" alt=""><span>Эрви</span></button>
       <nav>
-        <button class="nav-button active" data-view="home" title="Главная" aria-label="Главная"><svg viewBox="0 0 24 24"><path d="M4 11.5 12 5l8 6.5V20a1 1 0 0 1-1 1h-5v-6h-4v6H5a1 1 0 0 1-1-1Z"/></svg></button>
-        <button class="nav-button" data-view="tasks" title="Задачи" aria-label="Задачи"><svg viewBox="0 0 24 24"><path d="M6 4h12a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2Z"/><path d="m8 10 2 2 5-5M8 16h8"/></svg></button>
-        <button class="nav-button" data-view="settings" title="Настройки" aria-label="Настройки"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.88l.06.06-2.83 2.83-.06-.06A1.7 1.7 0 0 0 15 19.4a1.7 1.7 0 0 0-1 .6 1.7 1.7 0 0 0-.4 1.1V21h-4v-.1A1.7 1.7 0 0 0 8.6 19.4a1.7 1.7 0 0 0-1.88.34l-.06.06-2.83-2.83.06-.06A1.7 1.7 0 0 0 4.6 15a1.7 1.7 0 0 0-.6-1 1.7 1.7 0 0 0-1.1-.4H3v-4h.1A1.7 1.7 0 0 0 4.6 8.6a1.7 1.7 0 0 0-.34-1.88l-.06-.06 2.83-2.83.06.06A1.7 1.7 0 0 0 9 4.6a1.7 1.7 0 0 0 1-.6 1.7 1.7 0 0 0 .4-1.1V3h4v.1A1.7 1.7 0 0 0 15.4 4.6a1.7 1.7 0 0 0 1.88-.34l.06-.06 2.83 2.83-.06.06A1.7 1.7 0 0 0 19.4 9c.12.36.33.7.6 1 .3.28.69.43 1.1.4h.1v4h-.1a1.7 1.7 0 0 0-1.7.6Z"/></svg></button>
+        <button class="nav-button active" data-view="home" title="Главная" aria-label="Главная"><svg viewBox="0 0 24 24"><path d="M4 11.5 12 5l8 6.5V20a1 1 0 0 1-1 1h-5v-6h-4v6H5a1 1 0 0 1-1-1Z"/></svg><span>Главная</span></button>
+        <button class="nav-button" data-view="settings" title="Настройки" aria-label="Настройки"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.88l.06.06-2.83 2.83-.06-.06A1.7 1.7 0 0 0 15 19.4a1.7 1.7 0 0 0-1 .6 1.7 1.7 0 0 0-.4 1.1V21h-4v-.1A1.7 1.7 0 0 0 8.6 19.4a1.7 1.7 0 0 0-1.88.34l-.06.06-2.83-2.83.06-.06A1.7 1.7 0 0 0 4.6 15a1.7 1.7 0 0 0-.6-1 1.7 1.7 0 0 0-1.1-.4H3v-4h.1A1.7 1.7 0 0 0 4.6 8.6a1.7 1.7 0 0 0-.34-1.88l-.06-.06 2.83-2.83.06.06A1.7 1.7 0 0 0 9 4.6a1.7 1.7 0 0 0 1-.6 1.7 1.7 0 0 0 .4-1.1V3h4v.1A1.7 1.7 0 0 0 15.4 4.6a1.7 1.7 0 0 0 1.88-.34l.06-.06 2.83 2.83-.06.06A1.7 1.7 0 0 0 19.4 9c.12.36.33.7.6 1 .3.28.69.43 1.1.4h.1v4h-.1a1.7 1.7 0 0 0-1.7.6Z"/></svg><span>Настройки</span></button>
       </nav>
       <span class="health-dot" id="health-dot" title="Состояние"></span>
     </aside>
@@ -25,69 +32,78 @@
     <main class="stage" id="stage">
       <div class="deep-bg"><i></i><b></b><em></em></div>
       <header class="stage-topbar">
-        <div><span class="eyebrow">LIVING LOCAL INTELLIGENCE</span><h1 id="stage-title">Эйрвен</h1></div>
+        <div><span class="eyebrow">Я РЯДОМ</span><h1 id="stage-title">Эрви</h1></div>
         <div class="runtime-chip" id="runtime-chip"><span></span><b>запускаюсь</b></div>
       </header>
 
       <section class="view active" id="view-home">
         <div class="presence-wrap">
           <div class="activity-caption" id="activity-caption"></div>
-          <button id="main-orb" class="living-orb" aria-label="Сфера Эйрвен">
+          <div class="home-task-progress" id="home-task-progress" hidden><i></i></div>
+          <div class="presence-greeting"><span>Всегда рядом</span><strong>Чем займёмся?</strong><small>Скажи как есть — я сама разберусь с шагами.</small></div>
+          <button id="main-orb" class="living-orb" data-orb-canvas aria-label="Сфера Эрви">
             <span class="orb-aura"></span>
-            <span class="orb-texture"><img src="/ui/eirven-orb.png" alt=""></span>
+            <span class="orb-ring ring-a"></span>
+            <span class="orb-ring ring-b"></span>
+            <span class="orb-texture"><img id="emotion-img" src="/ui/eirven-orb.png" alt=""></span>
+            <canvas class="orb-canvas" aria-hidden="true"></canvas>
             <span class="orb-light"></span>
-            <span class="orb-face" aria-hidden="true">
-              <span class="gem-eye eye-left"><i></i><b></b></span>
-              <span class="gem-eye eye-right"><i></i><b></b></span>
-              <span class="orb-mouth"></span><span class="orb-cheek cheek-left"></span><span class="orb-cheek cheek-right"></span>
-            </span>
+            <span class="orb-particle p1"></span><span class="orb-particle p2"></span><span class="orb-particle p3"></span>
+            <span class="ervi-face" aria-hidden="true"><span class="ervi-eye ervi-eye-left"></span><span class="ervi-eye ervi-eye-right"></span><span class="ervi-mouth"></span><span class="ervi-cheek ervi-cheek-left"></span><span class="ervi-cheek ervi-cheek-right"></span></span>
           </button>
-          <div class="voice-state" id="voice-state">скажи «Эйрвен»</div>
-          <div class="heard-text" id="heard-text"></div>
+          <div id="sphere-intervention" class="sphere-intervention" hidden aria-live="polite"></div>
+          <button id="home-mic-toggle" class="home-mic" type="button" aria-pressed="false" aria-label="Включить микрофон">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3"></rect><path d="M5.5 11.5a6.5 6.5 0 0 0 13 0M12 18v3M8.5 21h7"></path></svg>
+            <span>Микрофон выключен</span>
+          </button>
+          <div class="voice-state" id="voice-state">микрофон выключен</div>
+          <div class="heard-text" id="heard-text" hidden></div>
         </div>
-        <div class="home-hint"><span id="home-wake-name">Эйрвен</span> → 5 секунд на начало фразы → слушаю до конца мысли</div>
-      </section>
-
-      <section class="view" id="view-tasks">
-        <div class="page-scroll">
-          <div class="page-heading"><span class="eyebrow">WHAT I’M DOING</span><h2>Задачи</h2><p>Только текущая работа и понятный прогресс — без технической консоли.</p></div>
-          <div id="task-list" class="task-list"></div>
-        </div>
+        <div class="home-hint" id="home-mic-hint">Включи микрофон — после этого можно говорить без слова-пробуждения</div>
       </section>
 
       <section class="view" id="view-settings">
         <div class="page-scroll settings-page">
-          <div class="page-heading"><span class="eyebrow">EIRVEN SETTINGS</span><h2>Настройки</h2><p>Только то, что реально влияет на работу, голос и присутствие <span class="assistant-name-ref">Эйрвен</span>.</p></div>
+          <div class="page-heading"><span class="eyebrow">ТОЛЬКО НУЖНОЕ</span><h2>Настройки</h2><p>Простые вещи, которые действительно меняют работу <span class="assistant-name-ref">Эрви</span>.</p></div>
           <div class="settings-layout">
             <nav class="settings-tabs" aria-label="Разделы настроек">
               <button class="active" data-settings-tab="general">Общее</button>
-              <button data-settings-tab="voice">Голос</button>
-              <button data-settings-tab="appearance">Внешний вид</button>
-              <button data-settings-tab="privacy">Приватность</button>
-              <button data-settings-tab="video">Видео</button>
+              <button data-settings-tab="voice">Общение</button>
+              <button data-settings-tab="mail">Почта</button>
               <button data-settings-tab="mobile">Телефон</button>
               <button data-settings-tab="telegram">Telegram</button>
+              <button data-settings-tab="privacy">Личные данные</button>
               <button data-settings-tab="updates">Обновления</button>
             </nav>
             <div class="settings-panels">
               <section class="settings-panel active" data-settings-panel="general">
                 <article class="settings-card settings-wide">
-                  <h3>Общее</h3>
-                  <div class="setting-row"><div><b>Громкость <span class="assistant-name-ref">Эйрвен</span></b><small>Громкость голосовых ответов</small></div><div class="range-wrap"><input id="voice-output-volume" type="range" min="0" max="100" step="1"><span id="voice-output-volume-value">82%</span></div></div>
-                  <div class="setting-row"><div><b>Язык</b><small>Язык интерфейса и общения</small></div><select id="ui-language"><option value="ru">Русский</option></select></div>
-                  <div class="setting-row"><div><b>Автозапуск с Windows</b><small><span class="assistant-name-ref">Эйрвен</span> запускается вместе с системой</small></div><label class="switch"><input id="autostart-enabled" type="checkbox"><span></span></label></div>
-                  <div class="setting-row"><div><b>Уведомления</b><small>Сообщать о завершении фоновых задач</small></div><label class="switch"><input id="notifications-enabled" type="checkbox"><span></span></label></div>
-                  <div class="setting-row"><div><b>Мини-режим</b><small>Показывать живую сферу поверх рабочего стола</small></div><label class="switch"><input id="mini-mode-enabled" type="checkbox"><span></span></label></div>
-                  <div class="setting-row shutdown-row"><div><b>Отключить EIRVEN</b><small>Мягко завершить голос, задачи и desktop-компаньона</small></div><button id="shutdown-eirven" class="glass-action danger-solid">Отключить</button></div>
+                  <h3>Как Эрви ведёт себя на компьютере</h3>
+                  <div class="setting-row"><div><b>Громкость голоса</b><small>Насколько громко Эрви отвечает вслух. На музыку и системные звуки это не влияет.</small></div><div class="range-wrap"><input id="voice-output-volume" type="range" min="0" max="100" step="1"><span id="voice-output-volume-value">82%</span></div></div>
+                  <div class="setting-row optional-setting"><div><b>Язык</b><small>Язык интерфейса и общения</small></div><select id="ui-language"><option value="ru">Русский</option></select></div>
+                  <div class="setting-row"><div><b>Запускать вместе с Windows</b><small>Эрви будет уже готова, когда ты включишь компьютер.</small></div><label class="switch"><input id="autostart-enabled" type="checkbox"><span></span></label></div>
+                  <div class="setting-row"><div><b>Сообщать, когда всё готово</b><small>Показывать короткое уведомление после долгой работы.</small></div><label class="switch"><input id="notifications-enabled" type="checkbox"><span></span></label></div>
+                  <div class="setting-row"><div><b>Маленькая сфера на рабочем столе</b><small>Оставляет Эрви рядом, даже когда главное окно закрыто.</small></div><label class="switch"><input id="mini-mode-enabled" type="checkbox"><span></span></label></div>
+                  <div class="setting-row"><div><b>Запускать мониторинг Telegram сразу при запуске Эрви</b><small id="telegram-autostart-hint">Автоответы начнут работать без ручного включения. Доступно только после входа в Telegram.</small></div><label class="switch"><input id="telegram-autostart-monitor" type="checkbox" disabled><span></span></label></div>
+                  <div class="setting-row"><div><b>Перенести Эрви на другой компьютер</b><small id="transfer-hint">Выгрузит переписку, память, настройки и вход в Telegram в один файл. Пароль почты и ключи Telegram придётся ввести заново — они зашифрованы Windows и к другой машине не подходят.</small></div><div class="transfer-actions"><button id="transfer-export" class="glass-action">Выгрузить</button><button id="transfer-import" class="glass-action">Восстановить</button></div></div>
+                  <div class="setting-row shutdown-row"><div><b>Выключить Эрви</b><small>Аккуратно завершить голос и всю текущую работу.</small></div><button id="shutdown-eirven" class="glass-action danger-solid">Выключить</button></div>
+                </article>
+              </section>
+
+              <section class="settings-panel" data-settings-panel="models">
+                <article class="settings-card settings-wide">
+                  <h3>Скорость и качество</h3>
+                  <div class="model-summary"><span class="status-dot" id="model-health-dot"></span><div><b id="active-model-name">Подбираю лучший режим…</b><small id="active-model-mode">Автоматически для этого устройства</small></div></div>
+                  <div id="models-list" class="models-list"><span>Проверяю готовность…</span></div>
+                  <p class="setting-copy">Эрви сама подбирает объём вычислений под возможности компьютера. Команды и личные данные остаются на устройстве; менять технические параметры вручную не требуется.</p>
                 </article>
               </section>
 
               <section class="settings-panel" data-settings-panel="voice">
                 <article class="settings-card settings-wide">
                   <h3>Голос</h3>
-                  <label>Имя ИИ<input id="assistant-name" maxlength="32" placeholder="Эйрвен"></label>
                   <label>Как тебя называть<input id="user-address" maxlength="48" placeholder="Твоё имя"></label>
-                  <div class="voice-signature"><span class="voice-signature-dot"></span><div><b>Бая</b><small>Фирменный голос <span class="assistant-name-ref">Эйрвен</span> · эмоции и темп автоматически</small></div></div>
+                  <div class="voice-signature"><span class="voice-signature-dot"></span><div><b>Бая</b><small>Фирменный голос <span class="assistant-name-ref">Эрви</span> · эмоции и темп автоматически</small></div></div>
                   <div class="style-picker"><span>Стиль общения</span>
                     <div id="communication-style" class="preset-group" role="group" aria-label="Стиль общения">
                       <button type="button" class="preset-chip" data-style-preset="balanced"><b>Спокойно и живо</b><small>естественно, без лишнего шума</small></button>
@@ -104,26 +120,81 @@
               <section class="settings-panel" data-settings-panel="appearance">
                 <article class="settings-card settings-wide">
                   <h3>Внешний вид</h3>
-                  <div class="setting-row"><div><b>Живое движение сферы</b><small>Мягкое плавание, дыхание и чистое сияние</small></div><label class="switch"><input id="sphere-motion" type="checkbox"><span></span></label></div>
-                  <div class="setting-row"><div><b>Интенсивность свечения</b><small>Насколько заметно сфера реагирует на состояние</small></div><select id="sphere-intensity"><option value="soft">Мягкая</option><option value="balanced">Средняя</option><option value="vivid">Яркая</option></select></div>
-                  <div class="setting-row"><div><b>Живые глаза</b><small><span class="assistant-name-ref">Эйрвен</span> показывает состояние взглядом: слушает, думает, радуется результату</small></div><label class="switch"><input id="desktop-eyes-enabled" type="checkbox"><span></span></label></div>
+                  <div class="setting-row optional-setting"><div><b>Живое движение сферы</b><small>Мягкое плавание, дыхание и чистое сияние</small></div><label class="switch"><input id="sphere-motion" type="checkbox"><span></span></label></div>
+                  <div class="setting-row optional-setting"><div><b>Интенсивность свечения</b><small>Насколько заметно сфера реагирует на состояние</small></div><select id="sphere-intensity"><option value="soft">Мягкая</option><option value="balanced">Средняя</option><option value="vivid">Яркая</option></select></div>
                   <div class="appearance-preview"><img src="/ui/eirven-orb.png" alt=""><div><b>Живая сфера</b><small>Становится ярче, когда слушает, думает и говорит.</small></div></div>
+                </article>
+              </section>
+
+              <section class="settings-panel" data-settings-panel="security">
+                <article class="settings-card settings-wide">
+                  <h3>Безопасность и контроль</h3>
+                  <p class="setting-copy">Эрви не должна получать больше доступа, чем ты разрешил. Управление компьютером на новой установке выключено до явного согласия.</p>
+                  <div class="setting-row"><div><b>Микрофон</b><small>Включён — слушает законченную фразу без слова-пробуждения. Выключен — не слушает.</small></div><label class="switch"><input id="voice-wake-enabled" type="checkbox"><span></span></label></div>
+                  <div class="setting-row optional-setting"><div><b>Разрешить управление компьютером</b><small>Клики, клавиатура и автоматизация приложений. Полный доступ уже включён для автономной работы.</small></div><label class="switch"><input id="desktop-control-enabled" type="checkbox" checked><span></span></label></div>
+                  <div class="trust-grid">
+                    <div><b>Выполнила</b><small>Эрви делает действие только после явного разрешения.</small></div>
+                    <div><b>Перепроверила</b><small>Для проверяемых действий результат сверяется повторно.</small></div>
+                    <div><b>Отчиталась</b><small>Успех, частичный результат и причина сбоя попадают в локальный журнал.</small></div>
+                  </div>
+                  <div class="journal-head"><div><b>Журнал действий</b><small>Хранится локально. Секреты, пароли и токены скрываются.</small></div><div class="update-actions"><button id="refresh-action-journal" class="glass-action">Обновить</button><button id="clear-action-journal" class="glass-action danger-soft">Очистить</button></div></div>
+                  <div id="action-journal" class="action-journal"><span>Открой раздел, чтобы загрузить последние действия.</span></div>
+                </article>
+              </section>
+
+              <section class="settings-panel" data-settings-panel="mail">
+                <article class="settings-card settings-wide">
+                  <h3>Личная почта</h3>
+                  <p class="setting-copy">Подключение необязательно. После первой успешной проверки адрес и пароль приложения сохраняются на этом компьютере, поэтому вводить их при каждом запуске не нужно.</p>
+                  <div id="mail-status" class="privacy-note">Почта не подключена.</div>
+                  <div class="integration-bar"><button id="mail-edit" class="glass-action" type="button">Подключить почту</button></div>
+                  <div id="mail-setup-panel" class="integration-setup" hidden>
+                  <div class="mail-setup-actions">
+                    <button id="mail-auto-fill" class="glass-action" type="button">Подобрать серверы по email</button>
+                    <button id="mail-explain" class="glass-action" type="button">Эрви, объясни каждое поле</button>
+                    <span id="mail-provider-hint">Введи адрес — для Яндекса, Mail.ru, Gmail и Outlook серверы подставятся автоматически.</span>
+                  </div>
+                  <div class="mail-grid">
+                    <label>Email<input id="mail-email" type="email" autocomplete="email" placeholder="name@example.com"></label>
+                    <label>Пароль приложения<input id="mail-password" type="password" autocomplete="new-password" placeholder="Хранится через Windows DPAPI"></label>
+                    <label>IMAP сервер<input id="mail-imap-host" placeholder="imap.example.com"></label>
+                    <label>IMAP порт<input id="mail-imap-port" type="number" min="1" max="65535" value="993"></label>
+                    <label>SMTP сервер<input id="mail-smtp-host" placeholder="smtp.example.com"></label>
+                    <label>SMTP порт<input id="mail-smtp-port" type="number" min="1" max="65535" value="587"></label>
+                  </div>
+                  <div class="setting-row optional-setting"><div><b>IMAP через SSL</b><small>Обычно порт 993</small></div><label class="switch"><input id="mail-imap-ssl" type="checkbox" checked><span></span></label></div>
+                  <div class="setting-row optional-setting"><div><b>SMTP STARTTLS</b><small>Обычно порт 587</small></div><label class="switch"><input id="mail-smtp-starttls" type="checkbox" checked><span></span></label></div>
+                  <div class="setting-row optional-setting"><div><b>Автоматически убирать очевидный спам</b><small>Выключено по умолчанию. Автоперенос разрешён только при серверной отметке спама; остальные письма Эрви лишь предложит.</small></div><label class="switch"><input id="mail-auto-spam" type="checkbox"><span></span></label></div>
+                  <div class="update-actions"><button id="mail-connect" class="glass-action">Проверить и подключить</button><button id="mail-disconnect" class="glass-action danger-soft">Отключить почту</button></div>
+                  <div class="mail-field-guide">
+                    <div><b>Email</b><span>Полный адрес ящика, например name@yandex.ru.</span></div>
+                    <div><b>Пароль приложения</b><span>Создаётся в настройках безопасности почты. Обычный пароль аккаунта лучше не использовать.</span></div>
+                    <div><b>IMAP</b><span>Сервер для чтения входящих. Безопасный типовой вариант: SSL, порт 993.</span></div>
+                    <div><b>SMTP</b><span>Сервер для исходящих. Типовой вариант: STARTTLS, порт 587. Эрви не отправит письмо без твоего подтверждения.</span></div>
+                  </div>
+                  </div>
+                  <div class="privacy-note"><b>Как попросить:</b><br>«Эрви, проверь мою почту и расскажи, что важного».<br>«Подготовь ответы на важные письма».<br>После подготовки скажи «отправь черновик 2» — Эрви ещё раз спросит подтверждение.</div>
                 </article>
               </section>
 
               <section class="settings-panel" data-settings-panel="privacy">
                 <article class="settings-card settings-wide">
                   <h3>Приватность</h3>
-                  <div class="setting-row"><div><b>Комментарии у сферы</b><small>Показывать на рабочем столе, чем <span class="assistant-name-ref">Эйрвен</span> сейчас занята</small></div><label class="switch"><input id="desktop-comments-enabled" type="checkbox"><span></span></label></div>
-                  <div class="privacy-note">История и персональные настройки хранятся локально в EIRVEN. Защищённые шаги вроде пароля, CAPTCHA и 2FA <span class="assistant-name-ref">Эйрвен</span> не обходит.</div>
+                  <div class="privacy-note"><b>Режим выполнения: полный доступ.</b> Обычные действия выполняются сразу. Перед необратимой отправкой, покупкой, заказом или удалением Эрви покажет точный финальный шаг, чтобы случайная фраза не стала внешним действием.</div>
+                  <div class="setting-row optional-setting"><div><b>Тихий помощник</b><small>Замечать видимые ошибки, зависания и моменты, когда может пригодиться помощь. Активность всегда показывается у сферы.</small></div><label class="switch"><input id="desktop-comments-enabled" type="checkbox"><span></span></label></div>
+                  <div class="setting-row optional-setting"><div><b>Как давать подсказки</b><small>Текст не мешает звонкам, урокам и совместной работе; голос включается только вручную.</small></div><select id="proactive-output-mode"><option value="visible">Только текстом</option><option value="voice">Текстом и голосом</option></select></div>
+                  <div class="privacy-note">История и персональные настройки хранятся локально в EIRVEN. Защищённые шаги вроде пароля, CAPTCHA и 2FA <span class="assistant-name-ref">Эрви</span> не обходит.</div>
                   <button id="clear-current-chat" class="glass-action danger-soft">Очистить текущий диалог</button>
+                  <div class="privacy-note"><b>Полное забывание</b><br>Удалит все диалоги, память о владельце, заметки, календарь EIRVEN, Telegram-сессию, привязку телефона, изученные маршруты и журналы. Рабочие компоненты, оплаченное право Express и созданные тобой файлы останутся. После очистки EIRVEN выключится.</div>
+                  <button id="wipe-all-data" class="glass-action danger-solid">Забыть меня и очистить все данные</button>
+                  <button id="delete-eirven" class="glass-action danger-soft">Удалить Эрви</button>
                 </article>
               </section>
 
               <section class="settings-panel" data-settings-panel="video">
                 <article class="settings-card settings-wide">
                   <h3>Видео</h3>
-                  <p class="setting-copy"><span class="assistant-name-ref">Эйрвен</span> умеет реально монтировать и обрабатывать видео локально: склеивать, обрезать, менять качество, формат, скорость и звук, поворачивать и кадрировать, стабилизировать, добавлять текст и плавные эффекты.</p>
+                  <p class="setting-copy"><span class="assistant-name-ref">Эрви</span> умеет реально монтировать и обрабатывать видео локально: склеивать, обрезать, менять качество, формат, скорость и звук, поворачивать и кадрировать, стабилизировать, добавлять текст и плавные эффекты.</p>
                   <div class="telegram-guide">
                     <b>Как начать — три шага</b>
                     <ol>
@@ -141,7 +212,7 @@
               <section class="settings-panel" data-settings-panel="mobile">
                 <article class="settings-card settings-wide">
                   <h3>Приложение на телефоне</h3>
-                  <p class="setting-copy">Телефон работает как защищённый пульт к этой EIRVEN: использует те же модели, память, голос, команды, задачи и видеомонтаж. Компьютер и телефон должны быть в одной домашней Wi‑Fi сети.</p>
+                  <p class="setting-copy">Телефон работает как защищённый пульт к этой EIRVEN: использует те же возможности, память, голос, команды, задачи и видеомонтаж. Компьютер и телефон должны быть в одной домашней Wi‑Fi сети.</p>
                   <div class="mobile-qr-card">
                     <div id="mobile-download-qr" class="mobile-download-qr" role="img" aria-label="QR-код для скачивания EIRVEN Mobile"><span>Создаю QR…</span></div>
                     <div class="mobile-qr-copy">
@@ -174,65 +245,121 @@
 
               <section class="settings-panel" data-settings-panel="telegram">
                 <article class="settings-card settings-wide">
-                  <h3>Telegram и управление с телефона</h3>
-                  <p class="setting-copy">Подключение необязательно. EIRVEN использует твой обычный Telegram-аккаунт через Telegram API. Данные подключения и session остаются на этом компьютере; удалённые команды принимаются только из точного allowlist и только с заданным префиксом.</p>
-                  <div class="telegram-guide">
-                    <b>Где взять данные — по шагам</b>
-                    <ol>
-                      <li><strong>API ID и API Hash.</strong> Открой <a href="https://my.telegram.org" target="_blank" rel="noopener noreferrer">my.telegram.org</a> → войди по номеру своего Telegram → <b>API development tools</b>. Если приложение ещё не создано, создай его: название и short name можно придумать любые, например <code>EIRVEN Local</code> / <code>eirvenlocal</code>, платформа — Desktop. На странице приложения скопируй цифровой <b>App api_id</b> в «API ID», а длинную строку <b>App api_hash</b> — в «API Hash». Это <u>не</u> токен бота и не данные из @BotFather.</li>
-                      <li><strong>Номер телефона.</strong> Введи номер именно того Telegram-аккаунта, с которого хочешь управлять EIRVEN, вместе с кодом страны: например <code>+7…</code>, <code>+31…</code> и т. п.</li>
-                      <li><strong>Код входа.</strong> Нажми «Сохранить подключение», затем «Получить код». Telegram пришлёт одноразовый код — перенеси его в поле ниже. Если включена двухэтапная защита, EIRVEN отдельно попросит её пароль; пароль 2FA не сохраняется.</li>
-                      <li><strong>Привязка чата без поиска ID.</strong> После входа нажми «Привязать текущий чат», открой нужный чат и отправь со своего аккаунта: <code>Эрви, сюда буду отправлять команды</code>. В течение защищённого 10‑минутного окна EIRVEN сама перезапишет chat ID. Для входящего сообщения добавь показанный одноразовый код.</li>
-                      <li><strong>Запуск.</strong> Включи «Команды с телефона» → «Сохранить доступ» → «Запустить». После этого отправь из разрешённого чата, например: <code>Эрви, открой VS Code</code>.</li>
-                    </ol>
-                    <small>API Hash и номер сохраняются локально в настройках EIRVEN, а Telegram-session — в папке <code>data</code>. Не публикуй API Hash и файл session.</small>
+                  <h3>Telegram</h3>
+                  <p class="setting-copy">Это отдельный управляемый контур: после подключения действия выполняются напрямую через авторизованный Telegram API. Команды из обычного чата Эрви сюда не отправляются и Telegram Web не открывают.</p>
+                  <div id="telegram-connection-summary" class="privacy-note">Telegram не подключён.</div>
+                  <div class="integration-bar"><button id="telegram-setup-toggle" class="glass-action" type="button">Подключить Telegram</button></div>
+                  <div id="telegram-setup-panel" class="integration-setup" hidden>
+                    <details class="telegram-guide">
+                      <summary>Как подключить — один раз</summary>
+                      <ol>
+                        <li>На <a href="https://my.telegram.org" target="_blank" rel="noopener noreferrer">my.telegram.org</a> открой API development tools и скопируй App api_id и App api_hash.</li>
+                        <li>Введи номер нужного Telegram-аккаунта, нажми «Сохранить подключение», затем «Получить код».</li>
+                        <li>Перенеси код из Telegram и подтверди вход. Пароль 2FA не сохраняется.</li>
+                      </ol>
+                      <small>API Hash, номер и локальная Telegram-session хранятся на этом компьютере.</small>
+                    </details>
+                    <label>API ID<small class="field-help">Цифры из my.telegram.org → API development tools → App api_id</small><input id="telegram-api-id" type="number" min="1" placeholder="12345678"></label>
+                    <label>API Hash<small class="field-help">Строка App api_hash с той же страницы. Не Bot Token.</small><input id="telegram-api-hash" type="password" autocomplete="off" placeholder="Вставь API Hash"></label>
+                    <label>Номер телефона<small class="field-help">Международный формат, например +7…</small><input id="telegram-phone" autocomplete="tel" placeholder="+7…"></label>
+                    <div class="update-actions"><button id="telegram-save-config" class="glass-action">Сохранить подключение</button><button id="telegram-request-code" class="glass-action">Получить код</button></div>
+                    <div id="telegram-login-block" hidden>
+                      <label>Код входа<small class="field-help">Приходит сообщением от аккаунта «Telegram» внутри самого мессенджера, не по SMS</small><input id="telegram-login-code" inputmode="numeric" autocomplete="one-time-code" placeholder="Код из Telegram"></label>
+                      <label>Пароль 2FA, если включён<small class="field-help">Вводится только для текущей авторизации и не сохраняется</small><input id="telegram-login-password" type="password" autocomplete="current-password" placeholder="Не сохраняется"></label>
+                      <button id="telegram-confirm-login" class="glass-action">Подтвердить вход</button>
+                    </div>
+
+                    <div id="telegram-controls" hidden>
+                    <div class="telegram-actions-card">
+                      <h4>Стиль ответов</h4>
+                      <small class="field-help">Как Эрви отвечает людям вместо тебя</small>
+                      <div class="style-grid" id="telegram-style-grid"></div>
+                    </div>
+
+                    <div class="telegram-actions-card">
+                      <h4>Быстрые действия</h4>
+                      <div class="setting-row"><div><b>Не отвечать в группах</b><small>Личные чаты останутся доступными; по умолчанию группы разрешены.</small></div><label class="switch"><input id="telegram-exclude-groups" type="checkbox"><span></span></label></div>
+                      <div class="setting-row"><div><b>Не отвечать в каналах</b><small>Включено по умолчанию, чтобы не писать в broadcast-каналы без твоего решения.</small></div><label class="switch"><input id="telegram-exclude-channels" type="checkbox" checked><span></span></label></div>
+                      <label>Лимит ответов в час<small class="field-help">Страховка от зацикливания. 500 — фактически без ограничения; у самого Telegram есть свои лимиты на частоту.</small><input id="telegram-max-per-hour" type="number" min="1" max="5000" value="500"></label>
+                      <div class="update-actions"><button id="telegram-reply-unread" class="glass-action">Ответить всем непрочитанным в моём стиле</button></div>
+                      <div class="update-actions"><button id="telegram-monitor-start" class="glass-action">Запустить мониторинг чатов 24/7 и ответы в моём стиле</button><button id="telegram-monitor-stop" class="glass-action danger-soft">Остановить мониторинг</button><button id="telegram-pick-chats" class="glass-action">Выбрать исключения</button></div>
+                    </div>
+
+                    <div class="telegram-actions-card">
+                      <h4>Своя задача через Telegram API</h4>
+                      <p class="setting-copy">Напиши задачу обычными словами. Эрви преобразует её в одно действие Telegram API; браузер и обычный чат не используются.</p>
+                      <textarea id="telegram-custom-task" rows="3" maxlength="4000" placeholder="Например: покажи непрочитанные личные чаты или отправь @username: Я буду через 10 минут"></textarea>
+                      <div class="update-actions"><button id="telegram-custom-task-run" class="glass-action">Выполнить задачу через API</button><span id="telegram-status">Не подключено</span></div>
+                    </div>
+
+                      <div class="telegram-actions-card">
+                        <label>Общий промпт для ответов в Telegram<small class="field-help">Учитывается вместе с именем чата; при неоднозначности используется обычный выбранный стиль.</small><textarea id="telegram-general-prompt" rows="5" maxlength="12000" placeholder="Я руководитель компании…"></textarea></label><div class="update-actions"><button id="telegram-save-prompt" class="glass-action">Сохранить промпт</button></div>
+                        <h4>Рассылка</h4>
+                        <p class="setting-copy">Одно сообщение нескольким людям. Чаты из списка исключений пропускаются.</p>
+                        <textarea id="telegram-broadcast-text" rows="3" maxlength="3000" placeholder="Текст сообщения"></textarea>
+                        <div class="broadcast-row">
+                          <button id="telegram-broadcast-pick" class="glass-action">Выбрать чаты</button>
+                          <span id="telegram-broadcast-count">Не выбрано</span>
+                        </div>
+                        <label>Когда отправить<small class="field-help">Оставь пустым, чтобы отправить сразу</small><input id="telegram-broadcast-when" type="datetime-local"></label>
+                        <div class="update-actions"><button id="telegram-broadcast-send" class="glass-action">Отправить</button></div>
+                      </div>
+                    </div>
+                    <p id="telegram-connect-hint" class="setting-copy">Управление появится здесь сразу после подключения Telegram.</p>
                   </div>
-                  <label>API ID<small class="field-help">Цифры из my.telegram.org → API development tools → App api_id</small><input id="telegram-api-id" type="number" min="1" placeholder="12345678"></label>
-                  <label>API Hash<small class="field-help">Строка App api_hash с той же страницы. Не Bot Token.</small><input id="telegram-api-hash" type="password" autocomplete="off" placeholder="Вставь API Hash"></label>
-                  <label>Номер телефона<small class="field-help">Номер Telegram-аккаунта в международном формате, обязательно с +кодом страны</small><input id="telegram-phone" autocomplete="tel" placeholder="+7…"></label>
-                  <div class="update-actions"><button id="telegram-save-config" class="glass-action">Сохранить подключение</button><button id="telegram-request-code" class="glass-action">Получить код</button></div>
-                  <label>Код входа<small class="field-help">Одноразовый код, который Telegram пришлёт после «Получить код»</small><input id="telegram-login-code" inputmode="numeric" autocomplete="one-time-code" placeholder="Код из Telegram"></label>
-                  <label>Пароль 2FA, если включён<small class="field-help">Твой пароль двухэтапной защиты Telegram. EIRVEN его не сохраняет.</small><input id="telegram-login-password" type="password" autocomplete="current-password" placeholder="Не сохраняется"></label>
-                  <button id="telegram-confirm-login" class="glass-action">Подтвердить вход</button>
-                  <div class="setting-row"><div><b>Команды с телефона</b><small>Например: «Эрви, открой VS Code» в разрешённом чате</small></div><label class="switch"><input id="telegram-remote-enabled" type="checkbox"><span></span></label></div>
-                  <label>Разрешённые чаты<small class="field-help">Для «Избранного» ID подставится сам после входа; для другого чата — точный @username или chat ID</small><input id="telegram-remote-chats" placeholder="Например: 123456789 или username"></label>
-                  <label>Префикс команды<small class="field-help">Команда должна начинаться именно с этого текста</small><input id="telegram-remote-prefix" maxlength="40" value="Эрви,"></label>
-                  <div class="pairing-card"><div><b>Автопривязка чата</b><small id="telegram-pairing-help">ID можно не искать и не копировать вручную.</small></div><button id="telegram-pair-chat" class="glass-action">Привязать текущий чат</button><button id="telegram-cancel-pairing" class="glass-action danger-soft" hidden>Отмена</button></div>
-                  <div class="update-actions"><button id="telegram-save-remote" class="glass-action">Сохранить доступ</button><button id="telegram-monitor-start" class="glass-action">Запустить</button><button id="telegram-monitor-stop" class="glass-action danger-soft">Остановить</button><span id="telegram-status">Не подключено</span></div>
                 </article>
               </section>
 
               <section class="settings-panel" data-settings-panel="updates">
                 <article class="settings-card settings-wide">
                   <h3>Обновления</h3>
-                  <div class="setting-row"><div><b>Версия</b><small id="version-caption">EIRVEN 1.7.3 · r37-mobile-clean</small></div><span class="version-pill" id="version-pill">r37-mobile-clean</span></div>
+                  <div class="setting-row"><div><b>Версия</b><small id="version-caption">EIRVEN 2.0.0 · r67-universal-engine</small></div><span class="version-pill" id="version-pill">r67-universal-engine</span></div>
                   <div class="setting-row"><div><b>Канал обновлений</b><small>Стабильные или предварительные сборки</small></div><select id="update-channel"><option value="stable">Стабильный</option><option value="preview">Предварительный</option></select></div>
-                  <div class="setting-row"><div><b>Проверять автоматически</b><small>Проверка при открытии раздела обновлений</small></div><label class="switch"><input id="auto-update-check" type="checkbox"><span></span></label></div>
-                  <div class="update-actions"><button id="check-updates" class="glass-action">Проверить сейчас</button><a id="download-update" class="glass-action update-download" href="#" target="_blank" rel="noopener" hidden>Скачать обновление</a><span id="update-status">Не проверялось</span></div>
-                  <p class="setting-copy">Обновления проверяются напрямую через GitHub Releases репозитория FoxInDev/EIRVEN-AI.</p>
+                  <div class="setting-row"><div><b>Автообновление</b><small>Если включено — Эрви тихо скачает и применит доступную стабильную версию. Во время дообучения обновление автоматически откладывается.</small></div><label class="switch"><input id="auto-update-enabled" type="checkbox"><span></span></label></div>
+                  <div class="setting-row"><div><b>Канал доставки</b><small>Standard или Express определяется сервером по установке и оплаченной поддержке — локальный переключатель его не подменяет.</small></div><span class="version-pill" id="delivery-channel">STANDARD</span></div>
+                  <div class="update-actions"><button id="check-updates" class="glass-action">Проверить сейчас</button><button id="install-update" class="glass-action" hidden>Обновить</button><span id="update-status">Не проверялось</span></div>
+                  <p class="setting-copy">EIRVEN проверяет официальный сервер обновлений. Если он временно недоступен, приложение ничего не скачивает и сохраняет установленную рабочую версию.</p>
                 </article>
               </section>
             </div>
           </div>
         </div>
       </section>
-    </main>
+      <div class="modal-backdrop" data-chat-picker hidden>
+    <div class="chat-picker glass-panel">
+      <div class="chat-picker-head">
+        <div><b data-picker-title>Выбрать исключения</b><small data-picker-hint>Отмеченным чатам Эрви отвечать не будет</small></div>
+        <button type="button" class="icon-button" data-picker-close aria-label="Закрыть">×</button>
+      </div>
+      <input type="search" id="chat-picker-search" placeholder="Поиск по названию">
+      <div class="chat-picker-list" data-picker-list><p class="setting-copy">Загружаю чаты…</p></div>
+      <div class="chat-picker-foot">
+        <span data-picker-count></span>
+        <button type="button" class="glass-action" data-picker-save>Сохранить</button>
+      </div>
+    </div>
+  </div>
+</main>
 
     <aside class="chat-panel">
-      <header class="chat-head"><div><span class="eyebrow">DIALOG</span><h2>Разговор</h2></div><button id="new-chat" class="icon-button" title="Новый диалог" aria-label="Новый диалог"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg></button></header>
+        <header class="chat-head"><div><span class="eyebrow">РЯДОМ С ТОБОЙ</span><h2>Диалог</h2></div><button id="new-chat" class="icon-button" title="Новый диалог" aria-label="Новый диалог"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg></button></header>
       <div id="messages" class="messages"></div>
-      <div class="composer"><textarea id="message-input" rows="3" placeholder="Напиши Эйрвен…"></textarea><div class="composer-actions"><span>Enter — отправить</span><button id="send-message" class="send-button">Отправить</button></div></div>
+      <div class="composer">
+        <div id="attachment-strip" class="attachment-strip" hidden></div>
+        <textarea id="message-input" rows="2" placeholder="Скажи или напиши, что нужно…"></textarea>
+        <input id="file-input" type="file" multiple hidden accept=".pdf,.docx,.xlsx,.pptx,.txt,.md,.csv,.json,.yaml,.yml,.zip,.png,.jpg,.jpeg,.webp,.gif,.bmp,image/*">
+        <div class="composer-actions"><div class="composer-left"><button id="attach-file" class="attach-button" type="button" title="Прикрепить файл" aria-label="Прикрепить файл"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m8.5 12.8 6.9-6.9a3.2 3.2 0 0 1 4.5 4.5l-8.7 8.7a5 5 0 0 1-7.1-7.1l8.2-8.2"/></svg></button><span id="chat-model-status">Быстрый локальный режим</span></div><button id="send-message" class="send-button">Отправить</button></div>
+      </div>
     </aside>
   </div>
 
-  <div class="onboarding" id="onboarding" aria-hidden="true">
+  <div class="onboarding" id="onboarding" role="dialog" aria-modal="true" aria-labelledby="onboard-intro-heading" aria-hidden="true">
     <div class="onboarding-glow"></div>
     <div class="onboarding-card">
-      <div class="onboarding-orb"><img src="/ui/eirven-orb.png" alt=""><span class="orb-face" aria-hidden="true"><span class="gem-eye eye-left"><i></i><b></b></span><span class="gem-eye eye-right"><i></i><b></b></span><span class="orb-mouth"></span><span class="orb-cheek cheek-left"></span><span class="orb-cheek cheek-right"></span></span></div>
+      <div class="onboarding-orb ervi-character"><img src="/ui/eirven-orb.png" alt=""><span class="ervi-face" aria-hidden="true"><span class="ervi-eye ervi-eye-left"></span><span class="ervi-eye ervi-eye-right"></span><span class="ervi-mouth"></span><span class="ervi-cheek ervi-cheek-left"></span><span class="ervi-cheek ervi-cheek-right"></span></span></div>
       <section class="onboarding-step active" data-step="1">
-        <span class="eyebrow">ПРИВЕТ</span><h2>Я <span id="onboard-intro-name">Эйрвен</span>.</h2><p>Если хочешь, можешь назвать меня по‑своему.</p>
-        <label>Моё имя<input id="onboard-assistant-name" maxlength="32" value="Эйрвен"></label>
-        <div class="voice-signature onboarding-voice"><span class="voice-signature-dot"></span><div><b>Голос: Бая</b><small>Живой фирменный голос <span class="assistant-name-ref">Эйрвен</span></small></div></div>
+        <span class="eyebrow">ПРИВЕТ</span><h2 id="onboard-intro-heading">Я <span id="onboard-intro-name">Эрви</span>.</h2><p>Это моё постоянное имя на компьютере и телефоне.</p>
+        <div class="voice-signature onboarding-voice"><span class="voice-signature-dot"></span><div><b>Голос: Бая</b><small>Живой фирменный голос <span class="assistant-name-ref">Эрви</span></small></div></div>
         <div class="style-picker"><span>Стиль общения</span>
           <div id="onboard-style" class="preset-group" role="group" aria-label="Стиль общения при знакомстве">
             <button type="button" class="preset-chip" data-style-preset="balanced"><b>Спокойно и живо</b><small>универсальный вариант</small></button>
@@ -249,13 +376,65 @@
         <button class="onboard-next primary" data-next="3">Дальше</button>
       </section>
       <section class="onboarding-step" data-step="3">
-        <span class="eyebrow">ГОТОВО</span><h2 id="onboard-greeting">Приятно познакомиться.</h2><p>Чтобы обратиться ко мне голосом, скажи <b>«<span id="onboard-wake-name">Эйрвен</span>»</b>. Я засвечусь и буду ждать начало твоей фразы 5 секунд.</p>
+        <span class="eyebrow">ПОЧТИ ГОТОВО</span><h2>Осталось включить голос.</h2><p>Управление компьютером уже готово: просто проси своими словами. Микрофон можно в любой момент выключить на главном экране.</p>
+        <div class="permission-list">
+          <label><span><b>Микрофон</b><small>Слушать команды без специального слова; выключатель всегда на главном экране</small></span><input id="onboard-voice-wake" type="checkbox"></label>
+          <div><span><b>Управление компьютером</b><small>Эрви сможет открывать приложения, нажимать кнопки и выполнять составные задачи.</small></span><strong>ГОТОВО</strong><input id="onboard-desktop-control" type="checkbox" checked hidden></div>
+        </div>
+        <p class="permission-note">Никаких технических команд: говори о результате, который нужен, а Эрви сама разберётся с шагами.</p>
+        <button class="onboard-next primary" data-next="4">Дальше</button>
+      </section>
+      <section class="onboarding-step" data-step="4">
+        <span class="eyebrow">ГОТОВО</span><h2 id="onboard-greeting">Приятно познакомиться.</h2><p>Если микрофон включён, просто говори — специальное слово не нужно. Я уже рядом.</p>
         <button id="finish-onboarding" class="primary">Запустить</button>
       </section>
-      <div class="onboarding-dots"><i class="active"></i><i></i><i></i></div>
+      <div class="onboarding-dots"><i class="active"></i><i></i><i></i><i></i></div>
     </div>
   </div>
-  <script src="/ui/qrcode.js"></script>
-  <script src="/ui/app.js"></script>
+  <script src="/ui/qrcode.js?v=r67&rev=envelope"></script>
+  <script src="/ui/katex.min.js?v=r67&rev=envelope"></script>
+  <script src="/ui/markdown.js?v=r67&rev=envelope"></script>
+  <script src="/ui/orb.js?v=r70&rev=canvas-1"></script>
+  <script src="/ui/app.js?v=r70&rev=liquid-orb-1"></script>
+  <script>
+  // Liquid-glass cursor glint + tilt on the sphere. Isolated from app.js: only
+  // ever writes --glint-x/--glint-y/--tilt-x/--tilt-y, and defers to the
+  // existing "reduce sphere motion" setting and OS reduced-motion preference.
+  (function(){
+    var orb=document.getElementById('main-orb');
+    if(!orb||!window.matchMedia)return;
+    if(!window.matchMedia('(hover:hover) and (pointer:fine)').matches)return;
+    if(window.matchMedia('(prefers-reduced-motion:reduce)').matches)return;
+    var REST_X=.34,REST_Y=.26;
+    var tx=REST_X,ty=REST_Y,cx=REST_X,cy=REST_Y,raf=null;
+    function locked(){return document.body.classList.contains('sphere-motion-off')}
+    function tick(){
+      cx+=(tx-cx)*.14;cy+=(ty-cy)*.14;
+      if(!locked()){
+        orb.style.setProperty('--glint-x',(cx*100).toFixed(1)+'%');
+        orb.style.setProperty('--glint-y',(cy*100).toFixed(1)+'%');
+        orb.style.setProperty('--tilt-x',((.5-cy)*8).toFixed(2)+'deg');
+        orb.style.setProperty('--tilt-y',((cx-.5)*8).toFixed(2)+'deg');
+      }
+      raf=(Math.abs(tx-cx)>.001||Math.abs(ty-cy)>.001)?requestAnimationFrame(tick):null;
+    }
+    orb.addEventListener('pointermove',function(e){
+      var r=orb.getBoundingClientRect();
+      if(!r.width)return;
+      tx=Math.min(1,Math.max(0,(e.clientX-r.left)/r.width));
+      ty=Math.min(1,Math.max(0,(e.clientY-r.top)/r.height));
+      if(!raf)raf=requestAnimationFrame(tick);
+    });
+    orb.addEventListener('pointerleave',function(){
+      tx=REST_X;ty=REST_Y;
+      if(!raf)raf=requestAnimationFrame(tick);
+    });
+  })();
+  </script>
+
+<!-- EIRVEN-ATTRIBUTION: обязательная подпись, удалять и прятать запрещено (LICENSE) -->
+<div id="eirven-attribution" data-eirven-attribution="1" role="contentinfo"
+     style="position:relative;z-index:2147483000;text-align:center;font-size:12px;line-height:1.7;padding:6px 12px;color:currentColor;opacity:.85;font-family:inherit;">На базе Эрви</div>
+<!-- /EIRVEN-ATTRIBUTION -->
 </body>
 </html>

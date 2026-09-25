@@ -1,8 +1,12 @@
+# EIRVEN AI — 2.4.0
+# Copyright (c) 2026 Даниил Павлов. Все права защищены. / All rights reserved.
+# Лицензия: EIRVEN Non-Commercial License — см. файл LICENSE.
+# Обязательна видимая подпись «На базе Эрви». Скрывать её запрещено (см. LICENSE).
+# EIRVEN-LICENSE-HEADER
 from __future__ import annotations
 
 import json
 import re
-import shutil
 import os
 import threading
 import time
@@ -78,32 +82,221 @@ class ProjectBuilder:
             value = f"eirven-project-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
         return value[:64]
 
-    def project_root(self, name: str) -> Path:
+    @staticmethod
+    def desktop_root() -> Path:
+        candidates = [
+            Path(os.environ.get("OneDrive", "")) / "Desktop" if os.environ.get("OneDrive") else None,
+            Path(os.environ.get("USERPROFILE", "")) / "Desktop" if os.environ.get("USERPROFILE") else None,
+            Path.home() / "Desktop",
+            Path.home() / "Рабочий стол",
+        ]
+        for candidate in candidates:
+            if candidate and candidate.is_dir():
+                return candidate.resolve()
+        return (Path.home() / "Desktop").resolve()
+
+    def project_root(self, name: str, requested_path: str | Path | None = None) -> Path:
+        """Resolve a project under the configured workspace or the user's Desktop.
+
+        A path is accepted only when it is explicitly supplied by the owner/model and
+        remains below one of those two local roots.  This lets a project be placed in
+        ``Рабочий стол\1`` without opening an unrestricted filesystem escape hatch.
+        """
+        requested = str(requested_path or "").strip()
+        if requested:
+            normalized = requested.replace("/", os.sep).strip().strip('"')
+            if re.fullmatch(r"(?:рабочий\s+стол|рабоч\w*\s+стол|desktop)(?:[\\/].*)?", normalized, re.I):
+                suffix = re.sub(r"^(?:рабочий\s+стол|рабоч\w*\s+стол|desktop)[\\/]?", "", normalized, flags=re.I)
+                root = (self.desktop_root() / suffix) if suffix else (self.desktop_root() / self.clean_name(name))
+            else:
+                candidate = Path(normalized).expanduser()
+                root = candidate if candidate.is_absolute() else (self.settings.workspace_dir / candidate)
+            root = root.resolve()
+            allowed = [self.settings.workspace_dir.resolve(), self.desktop_root()]
+            if not any(root == base or base in root.parents for base in allowed):
+                raise ValueError("Путь проекта должен находиться в workspace или на Рабочем столе")
+            if root == self.desktop_root():
+                root = (root / self.clean_name(name)).resolve()
+            return root
         root = (self.settings.workspace_dir / self.clean_name(name)).resolve()
-        if self.settings.workspace_dir not in root.parents:
+        if self.settings.workspace_dir.resolve() not in root.parents:
             raise ValueError("Некорректный путь проекта")
         return root
+
+    @staticmethod
+    def _safe_check_command(command: Any) -> str:
+        """Return a single, non-mutating project check command or an empty string."""
+        value = str(command or "").strip()
+        if not value or value.lower() in {"none", "нет", "-"}:
+            return ""
+        # Project metadata is data, not an unrestricted shell script. Native package
+        # managers may still dispatch their named test/check script, but Eirven never
+        # accepts shell chaining or repository-changing Git commands as verification.
+        if any(token in value for token in ("\r", "\n", "&&", "||", ";", "|", ">", "<", "`", "$(")):
+            return ""
+        if re.search(r"(?i)(?:^|\s)git(?:\.exe)?\b", value):
+            return ""
+        if re.search(r"(?i)(?:^|\s)(?:rm|rmdir|del|erase|remove-item)\b", value):
+            return ""
+        if re.search(r"(?i)(?:powershell|pwsh|cmd)(?:\.exe)?\s+(?:-[a-z]+\s+)*[-/]?(?:c|command)\b", value):
+            return ""
+        if re.search(r"(?i)(?:^|\s)(?:bash|sh|python|node)\s+(?:-[a-z]+\s+)*-(?:c|e)\b", value):
+            return ""
+        return value
+
+    @staticmethod
+    def _read_json_file(path: Path) -> dict[str, Any]:
+        try:
+            value = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError):
+            return {}
+        return value if isinstance(value, dict) else {}
+
+    @staticmethod
+    def _python_command(root: Path) -> str:
+        relative = Path(".venv/Scripts/python.exe" if os.name == "nt" else ".venv/bin/python")
+        return str(relative).replace("/", "\\") if (root / relative).is_file() and os.name == "nt" else (
+            relative.as_posix() if (root / relative).is_file() else "python"
+        )
+
+    @classmethod
+    def inspect_project(cls, root: Path, declared_test: Any = None) -> dict[str, Any]:
+        """Infer the existing stack and its native, bounded verification command.
+
+        Explicit project metadata wins, then ecosystem metadata. This deliberately
+        avoids a language whitelist: an unfamiliar stack remains supported through a
+        safe test command stored in ``.eirven_manifest.json``.
+        """
+        root = root.resolve()
+        manifest = cls._read_json_file(root / ".eirven_manifest.json")
+        explicit = cls._safe_check_command(declared_test) or cls._safe_check_command(manifest.get("test_command"))
+        if explicit:
+            if explicit.startswith("python "):
+                explicit = explicit.replace("python ", f"{cls._python_command(root)} ", 1)
+            stack = str(manifest.get("stack") or "").strip().lower()
+            if not stack:
+                if (root / "package.json").is_file():
+                    stack = "javascript"
+                elif any((root / item).is_file() for item in ("pyproject.toml", "setup.py", "setup.cfg", "requirements.txt")) or any(root.glob("*.py")):
+                    stack = "python"
+                elif (root / "Cargo.toml").is_file():
+                    stack = "rust"
+                elif (root / "go.mod").is_file():
+                    stack = "go"
+                else:
+                    stack = "declared"
+            return {"stack": stack, "commands": [explicit], "source": "manifest"}
+
+        package = cls._read_json_file(root / "package.json")
+        if package:
+            scripts = package.get("scripts") if isinstance(package.get("scripts"), dict) else {}
+            manager = (
+                "pnpm" if (root / "pnpm-lock.yaml").is_file()
+                else "yarn" if (root / "yarn.lock").is_file()
+                else "bun" if any((root / item).is_file() for item in ("bun.lock", "bun.lockb"))
+                else "npm"
+            )
+            for script_name in ("test", "check", "typecheck", "lint", "build"):
+                body = cls._safe_check_command(scripts.get(script_name))
+                if not body or re.search(r"(?i)no tests? specified|exit\s+1", body):
+                    continue
+                command = f"{manager} {script_name}" if script_name == "test" else f"{manager} run {script_name}"
+                return {"stack": "javascript", "commands": [command], "source": "package.json"}
+
+        python_files = list(root.glob("*.py")) or list(root.glob("src/**/*.py"))
+        python_metadata = any((root / item).is_file() for item in ("pyproject.toml", "setup.py", "setup.cfg", "requirements.txt"))
+        python_tests = (root / "tests").is_dir() or any(root.glob("test_*.py"))
+        if python_metadata or python_files:
+            python_cmd = cls._python_command(root)
+            command = f"{python_cmd} -m pytest -q" if python_tests else f"{python_cmd} -m compileall -q ."
+            return {"stack": "python", "commands": [command], "source": "python metadata"}
+
+        metadata_commands: tuple[tuple[str, tuple[str, ...], str], ...] = (
+            ("rust", ("Cargo.toml",), "cargo test"),
+            ("go", ("go.mod",), "go test ./..."),
+            ("dotnet", ("*.sln", "*.csproj", "*.fsproj"), "dotnet test"),
+            ("maven", ("pom.xml",), "mvn test"),
+            ("gradle", ("gradlew", "gradlew.bat"), ".\\gradlew.bat test" if os.name == "nt" else "./gradlew test"),
+            ("php", ("composer.json",), "composer test"),
+        )
+        for stack, patterns, command in metadata_commands:
+            if any(any(root.glob(pattern)) for pattern in patterns):
+                return {"stack": stack, "commands": [command], "source": "project metadata"}
+
+        makefile = root / "Makefile"
+        if makefile.is_file():
+            try:
+                make_text = makefile.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                make_text = ""
+            if re.search(r"(?m)^test\s*:", make_text):
+                return {"stack": "make", "commands": ["make test"], "source": "Makefile"}
+        return {"stack": "unknown", "commands": [], "source": "none"}
+
+    @classmethod
+    def setup_commands(cls, root: Path) -> list[str]:
+        """Choose dependency setup from files created for a new project."""
+        root = root.resolve()
+        package = cls._read_json_file(root / "package.json")
+        if package and not (root / "node_modules").is_dir():
+            has_packages = any(isinstance(package.get(key), dict) and package[key] for key in ("dependencies", "devDependencies", "optionalDependencies"))
+            if has_packages:
+                if (root / "pnpm-lock.yaml").is_file():
+                    return ["pnpm install --frozen-lockfile"]
+                if (root / "yarn.lock").is_file():
+                    return ["yarn install --frozen-lockfile"]
+                if (root / "package-lock.json").is_file():
+                    return ["npm ci"]
+                if any((root / item).is_file() for item in ("bun.lock", "bun.lockb")):
+                    return ["bun install --frozen-lockfile"]
+                return ["npm install"]
+
+        requirements = root / "requirements.txt"
+        requirements_text = requirements.read_text(encoding="utf-8", errors="replace").strip() if requirements.is_file() else ""
+        pyproject = root / "pyproject.toml"
+        pyproject_text = pyproject.read_text(encoding="utf-8", errors="replace") if pyproject.is_file() else ""
+        has_python_packages = bool(requirements_text) or bool(re.search(r"(?im)^\s*dependencies\s*=\s*\[[^]]*\S", pyproject_text))
+        if has_python_packages:
+            venv_python = ".venv\\Scripts\\python.exe" if os.name == "nt" else ".venv/bin/python"
+            install = f"{venv_python} -m pip install -e ." if pyproject.is_file() else f"{venv_python} -m pip install -r requirements.txt"
+            commands = [] if (root / Path(venv_python.replace("\\", "/"))).is_file() else ["python -m venv .venv"]
+            return [*commands, install]
+        return []
+
+    @staticmethod
+    def _unused_archive_path(root: Path, name: str) -> Path:
+        """Never overwrite a prior release archive."""
+        preferred = root.parent / f"{name}-release.zip"
+        if not preferred.exists():
+            return preferred
+        stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        candidate = root.parent / f"{name}-release-{stamp}.zip"
+        suffix = 2
+        while candidate.exists():
+            candidate = root.parent / f"{name}-release-{stamp}-{suffix}.zip"
+            suffix += 1
+        return candidate
 
     def generate_plan(
         self, name: str, description: str, model: str | None = None, *, num_predict: int | None = None
     ) -> dict[str, Any]:
         clean_name = self.clean_name(name)
         prompt = f"""
-Создай полностью запускаемый небольшой Python-проект с нуля.
+Создай полностью запускаемый небольшой программный проект с нуля.
 Имя: {clean_name}
 Требования пользователя:
 {description}
 
 Условия:
-- Сервер и бизнес-логика на Python.
-- Локальный веб-интерфейс допустимо делать через FastAPI + HTML/CSS/минимальный JS.
-- Не используй PHP, Node.js, npm и React.
-- Для небольшой утилиты делай минимальную структуру: обычно main.py + README.md + .gitignore; тест только если он реально полезен.
-- Максимально предпочитай стандартную библиотеку Python. Не добавляй pyproject/requirements/pytest, если внешние зависимости не нужны.
+- Выбери стек по задаче. Если пользователь назвал язык, фреймворк или синтаксис — строго следуй этому выбору.
+- Не ограничивай решение Python: допустим любой локально проверяемый стек, который подходит задаче.
+- Для небольшой утилиты делай минимальную структуру выбранного стека: точка входа + README.md + .gitignore; тест только если он реально полезен.
+- Не добавляй зависимости и инструменты только ради объёма; используй нативные metadata-файлы выбранного стека.
 - Не пиши длинную архитектурную документацию: summary и architecture по 1 короткому предложению.
 - Пользователю важна скорость до первого рабочего запуска, а не количество файлов.
 - Не вставляй секреты и реальные токены.
 - Пути относительные, без ../ и абсолютных путей.
+- test_command и run_command — по одной безопасной команде без конвейеров и Git-операций.
 - Содержимое каждого текстового файла верни полностью.
 - Не используй Markdown-ограждения внутри JSON.
 
@@ -111,7 +304,7 @@ class ProjectBuilder:
 """.strip()
         result = self.gateway.json(
             [
-                {"role": "system", "content": "Ты сильный Python-архитектор и пишешь рабочий код."},
+                {"role": "system", "content": "Ты сильный универсальный архитектор ПО и пишешь рабочий код на выбранном для задачи стеке."},
                 {"role": "user", "content": prompt},
             ],
             model=model or self.settings.code_model or self.settings.model,
@@ -129,24 +322,25 @@ class ProjectBuilder:
     ) -> dict[str, Any]:
         clean_name = self.clean_name(name)
         prompt = f"""
-Спроектируй production-ready, но локально запускаемый Python-проект.
+Спроектируй production-ready, но локально запускаемый программный проект.
 Имя проекта: {clean_name}
 Техническое задание пользователя:
 {description}
 
 Составь точную архитектуру и список файлов. Не пиши содержимое файлов на этом шаге.
 Требования:
-- Только Python для backend/логики; допускается локальная HTML/CSS/JS оболочка, которую отдаёт FastAPI.
+- Выбери стек по задаче; явно названные пользователем язык, фреймворк и синтаксис обязательны.
+- Не ограничивай архитектуру одним языком. Проверка должна использовать нативные metadata и команды выбранного стека.
 - Полная обработка ошибок, конфигурация через env, README, .gitignore, тесты.
 - Минимум зависимостей; никаких секретов.
 - Пути только относительные и безопасные.
 - Не больше 35 файлов; каждый файл должен быть реально нужен.
-- test_command и run_command должны быть одной командой без shell-конвейеров.
+- test_command и run_command должны быть одной командой без shell-конвейеров и Git-операций.
 Верни только JSON по схеме.
 """.strip()
         blueprint = self.gateway.json(
             [
-                {"role": "system", "content": "Ты проектируешь компактные, проверяемые Python-системы."},
+                {"role": "system", "content": "Ты проектируешь компактные, проверяемые системы на подходящем задаче стеке."},
                 {"role": "user", "content": prompt},
             ],
             model=model or self.settings.code_model,
@@ -189,7 +383,7 @@ class ProjectBuilder:
 """.strip()
         message = self.gateway.chat(
             [
-                {"role": "system", "content": "Ты пишешь один законченный файл production Python-проекта."},
+                {"role": "system", "content": "Ты пишешь один законченный файл production-проекта, строго соблюдая выбранный стек и архитектуру."},
                 {"role": "user", "content": prompt},
             ],
             model=model,
@@ -262,9 +456,9 @@ class ProjectBuilder:
         if total > 5_000_000:
             raise ValueError("Сгенерированный проект превышает лимит 5 МБ")
 
-    def create(self, name: str, plan: dict[str, Any], overwrite: bool = False) -> dict[str, Any]:
+    def create(self, name: str, plan: dict[str, Any], overwrite: bool = False, *, target_root: Path | None = None) -> dict[str, Any]:
         self.validate_plan(plan)
-        root = self.project_root(name)
+        root = (target_root or self.project_root(name)).resolve()
         if root.exists() and any(root.iterdir()) and not overwrite:
             raise FileExistsError(
                 f"Папка {root} уже существует и не пуста. Разрешите перезапись осознанно."
@@ -309,7 +503,7 @@ class ProjectBuilder:
         if initial_live:
             description += "\n\nПравки, добавленные во время запуска:\n- " + "\n- ".join(initial_live)
         live_seen = len(initial_live)
-        root = self.project_root(name)
+        root = self.project_root(name, payload.get("project_path") or payload.get("target_dir"))
         state_path = root / ".eirven_build_state.json"
 
         blueprint: dict[str, Any]
@@ -339,7 +533,8 @@ class ProjectBuilder:
                     raise FileExistsError(
                         f"Папка уже существует: {root}. Включите осознанную перезапись."
                     )
-                shutil.rmtree(root)
+                # Explicit overwrite may replace generated paths, but it must not erase
+                # unrelated owner files that happen to share the target directory.
             root.mkdir(parents=True, exist_ok=True)
             context.set_total(8)
             simple_markers = re.compile(
@@ -353,7 +548,7 @@ class ProjectBuilder:
                 # A 4B instruct model is considerably faster on mixed CPU/GPU laptops.
                 # The generated project is still compiled and tested afterwards; repair uses the coder model.
                 installed = {item.lower(): item for item in self.gateway.installed_models()}
-                # The same integrated Qwen3.5 family handles tools, chat and code, avoiding
+                # The same DeepSeek-Coder-V2 checkpoint handles tools, chat and code, avoiding
                 # costly model swaps while a project is being generated.
                 fast_model = installed.get((self.settings.fast_model or "").lower(), self.settings.fast_model or self.settings.model)
                 try:
@@ -362,7 +557,7 @@ class ProjectBuilder:
                         "Создаю файлы проекта",
                         lambda: self.generate_plan(name, description, fast_model, num_predict=560),
                     )
-                    created = self.create(name, plan, overwrite=True)
+                    created = self.create(name, plan, overwrite=True, target_root=root)
                     written = list(created["files"])
                     blueprint = {
                         "summary": plan.get("summary", ""),
@@ -413,8 +608,8 @@ class ProjectBuilder:
             )
 
         files = blueprint["files"]
-        # Files + environment + dependencies + syntax + tests + optional repair + git + archive.
-        total_steps = len(files) + 7
+        # Files + dependencies + native checks + optional repair + archive.
+        total_steps = len(files) + 5
         context.set_total(total_steps)
         if not resumed:
             context.update(
@@ -480,7 +675,7 @@ class ProjectBuilder:
         if live_now:
             context.update("Вношу правки, полученные во время сборки", progress=0.72)
             agent.run(
-                f"Проект находится в папке {name}. Не пересоздавай его. Внеси все эти правки владельца прямо сейчас: "
+                f"Проект находится в папке {root}. Не пересоздавай его. Внеси все эти правки владельца прямо сейчас: "
                 + " | ".join(live_now)
                 + ". Прочитай существующие файлы, внеси точечные изменения и сохрани результат.",
                 model=model, max_steps=16, external_stop_event=context.stop_event,
@@ -502,34 +697,15 @@ class ProjectBuilder:
         completed = len(files)
         context.check_cancelled()
 
-        # Do not spend minutes creating a venv and installing pytest for a tiny stdlib
-        # utility. Prepare an isolated environment only when the generated project
-        # actually declares external dependencies.
-        requirements = root / "requirements.txt"
-        req_text = requirements.read_text(encoding="utf-8", errors="replace").strip() if requirements.is_file() else ""
-        pyproject = root / "pyproject.toml"
-        pyproject_text = pyproject.read_text(encoding="utf-8", errors="replace") if pyproject.is_file() else ""
-        has_external_dependencies = bool(req_text) or bool(re.search(r"(?im)^\s*dependencies\s*=\s*\[[^]]*\S", pyproject_text))
-        venv_python = ".venv\\Scripts\\python.exe" if os.name == "nt" else ".venv/bin/python"
-        python_cmd = "python"
+        # Dependency setup is driven by the files the project actually declares. A
+        # Python venv is not imposed on Node/Rust/Go/future stacks.
         install_results: list[dict[str, Any]] = []
-
-        if has_external_dependencies:
+        install_commands = self.setup_commands(root)
+        if install_commands:
             context.update("Готовлю зависимости", completed_steps=completed)
-            venv_result = tools.execute(
-                "run_command",
-                {"command": "python -m venv .venv", "cwd": name, "timeout": 600},
-            )
-            if not venv_result.get("ok") or int(venv_result.get("result", {}).get("returncode", 1)) != 0:
-                raise RuntimeError(f"Не удалось создать окружение: {venv_result}")
-            python_cmd = venv_python
-            if pyproject.is_file():
-                install_commands = [f"{venv_python} -m pip install -e ."]
-            else:
-                install_commands = [f"{venv_python} -m pip install -r requirements.txt"]
             for command in install_commands:
                 context.check_cancelled()
-                result = tools.execute("run_command", {"command": command, "cwd": name, "timeout": 1200})
+                result = tools.execute("run_command", {"command": command, "cwd": str(root), "timeout": 1200})
                 install_results.append(result)
                 if not result.get("ok") or int(result.get("result", {}).get("returncode", 1)) != 0:
                     raise RuntimeError("Не удалось установить зависимости проекта: " + json.dumps(result, ensure_ascii=False))
@@ -537,35 +713,56 @@ class ProjectBuilder:
             context.update("Внешних зависимостей нет — запускаю без лишней установки", completed_steps=completed)
         completed += 1
 
-        context.update("Проверяю синтаксис", completed_steps=completed)
-        compile_result = tools.execute(
-            "run_command", {"command": f"{python_cmd} -m compileall -q .", "cwd": name, "timeout": 180}
+        profile = self.inspect_project(root, blueprint.get("test_command"))
+        check_commands = list(profile["commands"])
+        context.update(
+            f"Запускаю нативную проверку ({profile['stack']})" if check_commands else "У проекта нет проверяемой команды",
+            completed_steps=completed,
         )
+        check_results: list[dict[str, Any]] = []
+        for command in check_commands:
+            context.check_cancelled()
+            check_results.append(
+                tools.execute("run_command", {"command": command, "cwd": str(root), "timeout": 900})
+            )
+        no_check_result = {
+            "ok": False,
+            "result": {"returncode": 2, "stderr": "Проект не объявляет безопасную нативную проверку"},
+        }
+        compile_result = check_results[0] if check_results else no_check_result
+        test_result = check_results[-1] if check_results else no_check_result
+        test_command = check_commands[-1] if check_commands else ""
         completed += 1
 
-        # Respect the generated test command. Do not force-install pytest into every
-        # throw-away utility. If no tests were requested, successful compile is enough.
-        declared_test = str(blueprint.get("test_command") or "").strip()
-        if declared_test and declared_test.lower() not in {"none", "нет", "-"}:
-            test_command = declared_test.replace("python ", f"{python_cmd} ", 1) if declared_test.startswith("python ") else declared_test
-            context.update("Проверяю запуск/тесты", completed_steps=completed)
-            test_result = tools.execute("run_command", {"command": test_command, "cwd": name, "timeout": 600})
-        else:
-            test_command = f"{python_cmd} -m compileall -q ."
-            test_result = compile_result
-        completed += 1
-
-        test_ok = bool(test_result.get("ok") and int(test_result.get("result", {}).get("returncode", 1)) == 0)
+        test_ok = bool(
+            check_results
+            and all(item.get("ok") and int(item.get("result", {}).get("returncode", 1)) == 0 for item in check_results)
+        )
         if not test_ok:
             context.update("Исправляю фактическую ошибку", completed_steps=completed)
             report = agent.run(
-                f"Исправь проект в папке {name}. Требование: {description}. Фактическая ошибка проверки: {json.dumps(test_result, ensure_ascii=False)}. Внеси минимальное исправление и повтори команду {test_command}.",
+                f"Исправь проект в папке {root}. Требование: {description}. "
+                f"Фактическая ошибка проверки: {json.dumps(test_result, ensure_ascii=False)}. "
+                f"Внеси минимальное исправление. Используй metadata существующего стека; "
+                f"не создавай Python-окружение для другого стека и не запускай git add/commit/push. "
+                f"Команда проверки: {test_command or 'добавь безопасную нативную test/check-команду в metadata проекта'}.",
                 model=model,
                 max_steps=10,
                 external_stop_event=context.stop_event,
             )
-            test_result = tools.execute("run_command", {"command": test_command, "cwd": name, "timeout": 600})
-            test_ok = bool(test_result.get("ok") and int(test_result.get("result", {}).get("returncode", 1)) == 0)
+            profile = self.inspect_project(root, blueprint.get("test_command"))
+            check_commands = list(profile["commands"])
+            check_results = [
+                tools.execute("run_command", {"command": command, "cwd": str(root), "timeout": 900})
+                for command in check_commands
+            ]
+            compile_result = check_results[0] if check_results else no_check_result
+            test_result = check_results[-1] if check_results else no_check_result
+            test_command = check_commands[-1] if check_commands else ""
+            test_ok = bool(
+                check_results
+                and all(item.get("ok") and int(item.get("result", {}).get("returncode", 1)) == 0 for item in check_results)
+            )
         else:
             report = "Проверка прошла с первого раза."
         completed += 1
@@ -574,23 +771,24 @@ class ProjectBuilder:
         # automatically for every tiny utility.
         gitignore = root / ".gitignore"
         current_ignore = gitignore.read_text(encoding="utf-8", errors="replace") if gitignore.exists() else ""
-        required_ignores = [".venv/", "__pycache__/", "*.py[cod]", ".pytest_cache/", ".eirven_build_state.json"]
+        required_ignores = [".eirven_build_state.json", ".env"]
+        if profile["stack"] == "python":
+            required_ignores.extend([".venv/", "__pycache__/", "*.py[cod]", ".pytest_cache/"])
+        elif profile["stack"] == "javascript":
+            required_ignores.extend(["node_modules/", ".npm/"])
         lines = current_ignore.splitlines()
         missing_ignores = [item for item in required_ignores if item not in lines]
         if missing_ignores:
             prefix = "" if not current_ignore or current_ignore.endswith("\n") else "\n"
             gitignore.write_text(current_ignore + prefix + "\n".join(missing_ignores) + "\n", encoding="utf-8")
 
-        # Git is a user action, not mandatory project scaffolding. Initialising and
-        # committing every tiny project adds noticeable latency and surprising history.
+        # Git history is an irreversible owner-facing action and is never changed here.
         git_results: list[dict[str, Any]] = []
         context.update("Рабочая версия проверена", completed_steps=completed)
         completed += 1
 
         context.update("Создаю компактный архив", completed_steps=completed)
-        archive_path = self.settings.workspace_dir / f"{name}-release.zip"
-        if archive_path.exists():
-            archive_path.unlink()
+        archive_path = self._unused_archive_path(root, name)
         with zipfile.ZipFile(archive_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
             for file in root.rglob("*"):
                 if not file.is_file():
@@ -613,9 +811,10 @@ class ProjectBuilder:
             "run_command": blueprint.get("run_command", ""),
             "test_command": test_command,
             "files": written,
-            "environment": python_cmd,
+            "environment": profile["stack"],
             "dependencies": install_results,
             "compile": compile_result,
+            "checks": check_results,
             "tests": test_result,
             "repair_report": report,
             "git": git_results,
@@ -633,51 +832,53 @@ class ProjectBuilder:
     ) -> dict[str, Any]:
         name = self.clean_name(str(payload.get("name") or ""))
         request = str(payload.get("request") or "").strip()
-        root = self.project_root(name)
+        root = self.project_root(name, payload.get("project_path") or payload.get("target_dir"))
         if not root.is_dir():
             raise FileNotFoundError(f"Проект ещё не создан: {root}")
         if not request:
             raise ValueError("Не указано, что изменить")
 
-        context.set_total(4)
+        context.set_total(3)
         context.update("Изучаю существующий проект", completed_steps=0, progress=0.02)
-        venv_python = ".venv\\Scripts\\python.exe" if os.name == "nt" else ".venv/bin/python"
+        initial_profile = self.inspect_project(root)
+        native_checks = ", ".join(initial_profile["commands"]) or "не объявлена — определи её по metadata проекта"
         report = agent.run(
             (
-                f"Доработай существующий проект в папке {name}. Требование владельца: {request}. "
-                "Сначала прочитай .eirven_manifest.json и нужные исходники. Вноси точечные изменения, "
-                f"не переписывай всё без причины. Используй окружение {venv_python}. "
-                f"После изменений запусти {venv_python} -m pytest -q и исправляй ошибки."
+                f"Доработай существующий проект в папке {root}. Требование владельца: {request}. "
+                "Сначала прочитай metadata стека, .eirven_manifest.json (если есть) и нужные исходники. "
+                "Вноси только точечные изменения и сохраняй все не относящиеся к запросу файлы. "
+                f"Определённый стек: {initial_profile['stack']}; нативная проверка: {native_checks}. "
+                "Используй существующее окружение проекта, а не навязывай Python/venv/pytest другому стеку. "
+                "После изменений запусти нативную проверку и исправь ошибки. "
+                "Не запускай git add, commit, push, reset, clean или checkout."
             ),
             model=model,
             max_steps=24,
             external_stop_event=context.stop_event,
         )
         context.update("Проверяю проект после изменений", completed_steps=1)
-        test_command = f"{venv_python} -m pytest -q"
-        test_result = tools.execute(
-            "run_command", {"command": test_command, "cwd": name, "timeout": 1800}
-        )
-        verified = bool(
-            test_result.get("ok")
-            and int(test_result.get("result", {}).get("returncode", 1)) == 0
-        )
-
-        context.update("Сохраняю версию в Git", completed_steps=2)
-        git_results = []
-        for command in (
-            "git add .",
-            "git commit -m eirven-project-update",
-        ):
+        profile = self.inspect_project(root)
+        check_commands = list(profile["commands"])
+        check_results: list[dict[str, Any]] = []
+        for command in check_commands:
             context.check_cancelled()
-            git_results.append(
-                tools.execute("run_command", {"command": command, "cwd": name, "timeout": 300})
+            check_results.append(
+                tools.execute("run_command", {"command": command, "cwd": str(root), "timeout": 1800})
             )
+        test_result = check_results[-1] if check_results else {
+            "ok": False,
+            "result": {"returncode": 2, "stderr": "Проект не объявляет безопасную нативную проверку"},
+        }
+        verified = bool(
+            check_results
+            and all(item.get("ok") and int(item.get("result", {}).get("returncode", 1)) == 0 for item in check_results)
+        )
 
-        context.update("Обновляю архив", completed_steps=3)
-        archive_path = self.settings.workspace_dir / f"{name}-release.zip"
-        if archive_path.exists():
-            archive_path.unlink()
+        # Do not alter Git history or stage owner files. A release archive is additive
+        # and collision-safe, so a previous archive is preserved as well.
+        git_results: list[dict[str, Any]] = []
+        context.update("Создаю архив проверенной версии", completed_steps=2)
+        archive_path = self._unused_archive_path(root, name)
         with zipfile.ZipFile(archive_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
             for file in root.rglob("*"):
                 if not file.is_file():
@@ -688,15 +889,17 @@ class ProjectBuilder:
                 if "__pycache__" in relative.parts:
                     continue
                 archive.write(file, relative.as_posix())
-        context.update("Изменения готовы", completed_steps=4, progress=0.99)
+        context.update("Изменения готовы", completed_steps=3, progress=0.99)
         return {
             "project_name": name,
             "project_path": str(root),
             "archive_path": str(archive_path),
             "request": request,
+            "test_command": check_commands[-1] if check_commands else "",
             "tests": test_result,
+            "checks": check_results,
+            "stack": profile["stack"],
             "verified": verified,
             "report": report,
             "git": git_results,
         }
-

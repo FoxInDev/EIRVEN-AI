@@ -1,3 +1,8 @@
+# EIRVEN AI — 2.4.0
+# Copyright (c) 2026 Даниил Павлов. Все права защищены. / All rights reserved.
+# Лицензия: EIRVEN Non-Commercial License — см. файл LICENSE.
+# Обязательна видимая подпись «На базе Эрви». Скрывать её запрещено (см. LICENSE).
+# EIRVEN-LICENSE-HEADER
 from __future__ import annotations
 
 import re
@@ -7,6 +12,7 @@ from typing import Any
 from .config import Settings
 from .hardware import HardwareProfile
 from .llm import ModelGateway
+from .release_policy import TEXT_MODEL, VISION_MODEL
 
 
 @dataclass(slots=True)
@@ -41,8 +47,12 @@ class ModelRouter:
         re.IGNORECASE,
     )
     DEEP_MARKERS = re.compile(
-        r"\b(максимально подробно|глубокий анализ|глубоко проанализ|исследование|"
-        r"сложная архитектура|стратегия|доказательство)\b",
+        r"\b(?:максимально\s+подробно|"
+        r"глубок\w*\s+(?:анализ\w*|рассужд\w*|исследован\w*)|"
+        r"глубоко\s+(?:проанализ\w*|подумай|разбери)|"
+        r"подумай\s+(?:глубоко|тщательно|подольше)|"
+        r"тщательно\s+(?:проанализ\w*|исследуй|разбери)|"
+        r"включи\s+(?:режим\s+)?thinking|с\s+(?:подробным\s+)?рассуждением)\b",
         re.IGNORECASE,
     )
     SIMPLE_CHAT = re.compile(
@@ -57,6 +67,20 @@ class ModelRouter:
         re.IGNORECASE,
     )
 
+    _EXPLICIT_ITEMS = re.compile(
+        r"\b(?:ровно\s+|список(?:а|\s+из)?\s+|дай\s+|напиши\s+)?"
+        r"(\d{1,4})\s+"
+        r"(?:(?:коротк|кратк|нумерован|подробн|отдельн|разн)\w*\s+){0,4}"
+        r"(?:пункт|способ|идей|вариант|пример|шаг|строк)\w*\b",
+        re.IGNORECASE,
+    )
+    _EXPLICIT_WORDS = re.compile(r"\b(\d{2,5})\s+слов\w*\b", re.IGNORECASE)
+    _LONG_OUTPUT = re.compile(
+        r"\b(?:не\s+сокращай|без\s+сокращений|максимально\s+подробно|"
+        r"исчерпывающ\w*|развёрнут\w*|развернут\w*|полн\w*\s+ответ)\b",
+        re.IGNORECASE,
+    )
+
     def __init__(
         self,
         settings: Settings,
@@ -66,10 +90,47 @@ class ModelRouter:
         self.settings = settings
         self.gateway = gateway
         self.hardware = hardware
+        self._installed_cache: tuple[float, list[str]] | None = None
 
     def installed(self) -> list[str]:
+        now = __import__("time").monotonic()
+        cached = self._installed_cache
+        if cached is not None and now - cached[0] < 30.0:
+            return list(cached[1])
         method = getattr(self.gateway, "installed_models", None)
-        return method() if callable(method) else self.gateway.models()
+        values = method() if callable(method) else self.gateway.models()
+        self._installed_cache = (now, list(values or []))
+        return list(values or [])
+
+    def adapt_output_budget(self, query: str, route: ModelRoute) -> ModelRoute:
+        """Size output to the requested artifact, while keeping ordinary chat cheap.
+
+        The old fixed 384/1536 ceilings cut an explicitly requested 80-item answer at
+        item 71.  This estimator raises the ceiling only when the owner requested a
+        measurable/long artifact; ``task_num_predict`` remains the hard local cap.
+        """
+        base = max(64, int(route.num_predict))
+        hard_cap = max(base, int(self.settings.task_num_predict))
+        wanted = base
+        item_match = self._EXPLICIT_ITEMS.search(str(query or ""))
+        if item_match:
+            count = max(1, min(int(item_match.group(1)), 1000))
+            wanted = max(wanted, 192 + count * 32)
+        word_match = self._EXPLICIT_WORDS.search(str(query or ""))
+        if word_match:
+            words = max(1, min(int(word_match.group(1)), 20_000))
+            wanted = max(wanted, 160 + words * 2)
+        if self._LONG_OUTPUT.search(str(query or "")):
+            wanted = max(wanted, min(hard_cap, max(1024, base * 2)))
+        route.num_predict = min(hard_cap, wanted)
+        if route.num_predict > base:
+            # Reserve context for both prompt/history and the requested output.
+            route.num_ctx = min(
+                int(self.settings.task_num_ctx),
+                max(int(route.num_ctx), min(int(self.settings.task_num_ctx), route.num_predict + 3072)),
+            )
+            route.reason += f"; адаптивный бюджет ответа {route.num_predict} токенов"
+        return route
 
     @staticmethod
     def _base(model: str) -> str:
@@ -77,11 +138,7 @@ class ModelRouter:
 
     @staticmethod
     def _fast_candidates(configured: str) -> list[str]:
-        # The generic qwen3:4b tag can still emit a long internal draft. Prefer the
-        # final-answer-only instruct build when it is installed.
-        if configured.lower() in {"qwen3:4b", "qwen3:latest"}:
-            return ["qwen3:4b-instruct", configured]
-        return [configured, "qwen3:4b-instruct"]
+        return [TEXT_MODEL, configured]
 
     def _choose_existing(self, candidates: list[str]) -> str:
         installed = self.installed()
@@ -100,11 +157,32 @@ class ModelRouter:
         return candidates[0]
 
     def chat_route(self, query: str, explicit_model: str | None = None) -> ModelRoute:
+        if self.settings.strict_release_model:
+            complex_task = bool(self.COMPLEX_MARKERS.search(query)) or len(query) > 900
+            deep_requested = bool(self.DEEP_MARKERS.search(query))
+            low_memory = bool(self.hardware.ram_gb and self.hardware.ram_gb < 24)
+            task_ctx = min(self.settings.task_num_ctx, 8192 if low_memory else 16384)
+            selected = self._choose_existing(
+                [self.hardware.recommended_main_model, self.settings.model]
+                if (complex_task or deep_requested)
+                else [self.hardware.recommended_fast_model, self.settings.fast_model, self.settings.model]
+            )
+            return ModelRoute(
+                model=selected,
+                think=deep_requested,
+                num_ctx=task_ctx if complex_task else min(self.settings.chat_num_ctx, 3072),
+                num_predict=min(self.settings.task_num_predict, 1536) if complex_task else self.settings.chat_num_predict,
+                temperature=0.45 if complex_task else 0.68,
+                reason=("Глубокий режим на основной модели" if deep_requested else
+                        "Основная модель для сложной задачи" if complex_task else
+                        "Адаптивная быстрая модель без скрытого thinking"),
+            )
         if explicit_model and explicit_model not in {"auto", "Автоматически"}:
             complex_task = bool(self.COMPLEX_MARKERS.search(query))
+            deep_requested = bool(self.DEEP_MARKERS.search(query))
             return ModelRoute(
                 model=explicit_model,
-                think=complex_task and "instruct" not in explicit_model.lower(),
+                think=deep_requested and "instruct" not in explicit_model.lower(),
                 num_ctx=self.settings.task_num_ctx if complex_task else self.settings.chat_num_ctx,
                 num_predict=(
                     self.settings.task_num_predict
@@ -112,7 +190,10 @@ class ModelRouter:
                     else self.settings.chat_num_predict
                 ),
                 temperature=0.55 if complex_task else 0.72,
-                reason="Модель выбрана пользователем",
+                reason=(
+                    "Модель выбрана пользователем; глубокое рассуждение запрошено явно"
+                    if deep_requested else "Модель выбрана пользователем; быстрый режим"
+                ),
             )
 
         if self.SIMPLE_CHAT.match(query):
@@ -156,7 +237,7 @@ class ModelRouter:
             if self.hardware.vram_gb and self.hardware.vram_gb <= 6.0:
                 selected = self._choose_existing(
                     self._fast_candidates(self.settings.fast_model)
-                    + [self.hardware.recommended_fast_model, "qwen3.5:2b", self.settings.model]
+                    + [self.hardware.recommended_fast_model, self.settings.model]
                 )
                 return ModelRoute(
                     model=selected, think=False, num_ctx=min(self.settings.chat_num_ctx, 3072),
@@ -166,7 +247,7 @@ class ModelRouter:
             selected = self._choose_existing([self.settings.code_model, self.hardware.recommended_code_model, self.settings.model])
             return ModelRoute(
                 model=selected,
-                think=(is_complex and self._base(selected).lower() == "qwen3" and "instruct" not in selected.lower()),
+                think=(bool(self.DEEP_MARKERS.search(query)) and "instruct" not in selected.lower()),
                 num_ctx=self.settings.task_num_ctx,
                 num_predict=min(self.settings.task_num_predict, 1536),
                 temperature=0.25,
@@ -180,11 +261,11 @@ class ModelRouter:
             )
             return ModelRoute(
                 model=selected,
-                think=(deep_requested and self._base(selected).lower() == "qwen3" and "instruct" not in selected.lower()),
+                think=False,
                 num_ctx=self.settings.task_num_ctx,
                 num_predict=min(self.settings.task_num_predict, 2048),
                 temperature=0.5,
-                reason="Нужно глубокое рассуждение",
+                reason=("Глубокий режим с Thinking" if deep_requested else "Сложная задача без лишнего скрытого thinking"),
             )
         selected = self._choose_existing(
             self._fast_candidates(self.settings.fast_model)
@@ -200,20 +281,21 @@ class ModelRouter:
         )
 
     def agent_model(self, query: str) -> str:
-        """Use a small model for GUI/tool routing; reserve coder models for actual coding."""
+        """Choose planner model; official release never downgrades text intelligence by hardware."""
+        if self.settings.strict_release_model:
+            return self.settings.model
         code_heavy = bool(re.search(r"\b(напиши код|исправь код|рефактор|реализуй функц|создай файл с кодом)\w*", query, re.IGNORECASE))
         if code_heavy:
             return self._choose_existing([self.settings.code_model, self.settings.model])
-        if self._base(self.settings.fast_model).lower() in {"qwen3.5", "gemma4"}:
-            candidates = self._fast_candidates(self.settings.fast_model) + [self.hardware.recommended_fast_model, "qwen3.5:2b", "qwen3:1.7b", self.settings.model]
-        else:
-            # The stock Gemma 3 Ollama model is our fast chat/vision lane, not the
-            # native tool router. Keep a tiny Qwen tool-capable model as an on-demand
-            # reserve so GUI planning does not degrade when chat moves to Gemma.
-            candidates = ["qwen3.5:2b", "qwen3:1.7b"] + self._fast_candidates(self.settings.fast_model) + [self.hardware.recommended_fast_model, self.settings.model]
+        candidates = self._fast_candidates(self.settings.fast_model) + [
+            self.hardware.recommended_fast_model,
+            self.settings.model,
+        ]
         return self._choose_existing(candidates)
 
     def task_model(self, kind: str) -> str:
+        if self.settings.strict_release_model and kind not in {"vision", "screen", "image"}:
+            return self.settings.model
         if kind == "project":
             return self._choose_existing(
                 [
@@ -223,14 +305,12 @@ class ModelRouter:
                 ]
             )
         if kind in {"vision", "screen", "image"}:
-            # Image/screen analysis is deliberately isolated from the resident chat model.
-            # On 4-GB GPUs a 4B VLM can reserve a huge CUDA arena and stall ASR/chat for
-            # tens of seconds. Prefer the disposable 0.8B multimodal lane.
+            # Textual UI trees stay on DeepSeek-Coder-V2; Qwen3-VL is loaded only
+            # for a real screenshot, scan or image attachment.
             return self._choose_existing([
-                "qwen3.5:0.8b",
                 self.settings.vision_model,
                 self.hardware.recommended_vision_model,
-                "qwen3.5:2b",
+                VISION_MODEL,
             ])
         return self._choose_existing(
             [self.settings.model, self.hardware.recommended_main_model]

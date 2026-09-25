@@ -1,3 +1,8 @@
+# EIRVEN AI — 2.4.0
+# Copyright (c) 2026 Даниил Павлов. Все права защищены. / All rights reserved.
+# Лицензия: EIRVEN Non-Commercial License — см. файл LICENSE.
+# Обязательна видимая подпись «На базе Эрви». Скрывать её запрещено (см. LICENSE).
+# EIRVEN-LICENSE-HEADER
 from __future__ import annotations
 
 import json
@@ -10,6 +15,8 @@ from .database import Database, utc_now
 
 
 class MemoryStore:
+    ACTIVE_CONVERSATION_KEY = "active_conversation_id"
+
     def __init__(
         self,
         db: Database,
@@ -62,6 +69,7 @@ class MemoryStore:
                 """,
                 (conversation_id, "Новый чат", mode, now, now),
             )
+            self._set_active_in_connection(conn, conversation_id, now)
         return conversation_id
 
     def create_conversation(self, mode: str = "Друг", title: str = "Новый чат") -> str:
@@ -72,7 +80,72 @@ class MemoryStore:
                 "INSERT INTO conversations(id, title, mode, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
                 (conversation_id, title.strip() or "Новый чат", mode, now, now),
             )
+            self._set_active_in_connection(conn, conversation_id, now)
         return conversation_id
+
+    @classmethod
+    def _set_active_in_connection(
+        cls, conn: Any, conversation_id: str, now: str | None = None
+    ) -> None:
+        """Persist the selected chat in the same transaction as the chat mutation.
+
+        The browser still keeps a local hint for instant startup, but SQLite is the
+        source of truth.  This makes a reload, WebView replacement or cleared browser
+        storage recover the real last conversation instead of creating an empty one.
+        """
+        conn.execute(
+            """
+            INSERT INTO settings(key, value, updated_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT(key) DO UPDATE SET
+                value=excluded.value, updated_at=excluded.updated_at
+            """,
+            (
+                cls.ACTIVE_CONVERSATION_KEY,
+                json.dumps(str(conversation_id), ensure_ascii=False),
+                now or utc_now(),
+            ),
+        )
+
+    def set_active_conversation(self, conversation_id: str) -> bool:
+        clean = str(conversation_id or "").strip()
+        if not clean:
+            return False
+        with self.db.connect() as conn:
+            exists = conn.execute(
+                "SELECT 1 FROM conversations WHERE id=?", (clean,)
+            ).fetchone()
+            if not exists:
+                return False
+            self._set_active_in_connection(conn, clean)
+        return True
+
+    def active_conversation(self) -> dict[str, Any] | None:
+        """Return the durable current chat, repairing stale pointers automatically."""
+        stored = str(self.db.get_setting(self.ACTIVE_CONVERSATION_KEY, "") or "").strip()
+        with self.db.connect() as conn:
+            row = None
+            if stored:
+                row = conn.execute(
+                    "SELECT id,title,mode,created_at,updated_at FROM conversations WHERE id=?",
+                    (stored,),
+                ).fetchone()
+            if row is None:
+                # Prefer a real conversation over a newly-created empty shell.  This
+                # is the recovery path after old frontends lost localStorage state.
+                row = conn.execute(
+                    """
+                    SELECT c.id,c.title,c.mode,c.created_at,c.updated_at
+                    FROM conversations c
+                    ORDER BY EXISTS(
+                        SELECT 1 FROM messages m WHERE m.conversation_id=c.id
+                    ) DESC, c.updated_at DESC, c.id DESC
+                    LIMIT 1
+                    """
+                ).fetchone()
+                if row is not None:
+                    self._set_active_in_connection(conn, str(row["id"]))
+        return dict(row) if row else None
 
     def list_conversations(self, limit: int = 100) -> list[dict[str, Any]]:
         with self.db.connect() as conn:
@@ -107,7 +180,34 @@ class MemoryStore:
     def delete_conversation(self, conversation_id: str) -> bool:
         with self.db.connect() as conn:
             cursor = conn.execute("DELETE FROM conversations WHERE id=?", (conversation_id,))
-            return cursor.rowcount > 0
+            deleted = cursor.rowcount > 0
+            if deleted:
+                current = conn.execute(
+                    "SELECT value FROM settings WHERE key=?",
+                    (self.ACTIVE_CONVERSATION_KEY,),
+                ).fetchone()
+                try:
+                    active_id = str(json.loads(current["value"])) if current else ""
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    active_id = ""
+                if active_id == conversation_id:
+                    replacement = conn.execute(
+                        """
+                        SELECT c.id FROM conversations c
+                        ORDER BY EXISTS(
+                            SELECT 1 FROM messages m WHERE m.conversation_id=c.id
+                        ) DESC, c.updated_at DESC, c.id DESC
+                        LIMIT 1
+                        """
+                    ).fetchone()
+                    if replacement:
+                        self._set_active_in_connection(conn, str(replacement["id"]))
+                    else:
+                        conn.execute(
+                            "DELETE FROM settings WHERE key=?",
+                            (self.ACTIVE_CONVERSATION_KEY,),
+                        )
+            return deleted
 
     def conversation(self, conversation_id: str) -> dict[str, Any] | None:
         with self.db.connect() as conn:
@@ -142,6 +242,7 @@ class MemoryStore:
                 "UPDATE conversations SET updated_at=? WHERE id=?",
                 (utc_now(), conversation_id),
             )
+            self._set_active_in_connection(conn, conversation_id)
             # First user message becomes a useful chat title without another model call.
             if role == "user":
                 row = conn.execute(
@@ -339,11 +440,28 @@ class MemoryStore:
             exact_bonus = 1.0 if query_lower and query_lower in content_lower else 0.0
             semantic = self._cosine(query_vector, item.pop("_embedding")) if query_vector else 0.0
             item["_score"] = semantic * 6.0 + lexical * 0.8 + exact_bonus + int(item["importance"]) * 0.12
+            item["_lexical_hits"] = lexical
+            item["_semantic_score"] = semantic
+            item["_exact_bonus"] = exact_bonus
 
         parsed.sort(key=lambda item: (item["_score"], item["importance"], item["id"]), reverse=True)
         output = []
-        for item in parsed[:limit]:
+        # Importance keeps a fact durable, but it is not relevance.  Returning the
+        # highest-importance rows for a greeting (where no token matches) polluted
+        # the system prompt with old music/route topics and made the small renderer
+        # answer a new message as if it were a continuation.  Only expose a memory
+        # when the current utterance actually grounds it lexically or semantically.
+        grounded = [
+            item for item in parsed
+            if int(item.get("_lexical_hits") or 0) > 0
+            or float(item.get("_semantic_score") or 0.0) >= 0.22
+            or float(item.get("_exact_bonus") or 0.0) > 0.0
+        ]
+        for item in grounded[:limit]:
             item.pop("_score", None)
+            item.pop("_lexical_hits", None)
+            item.pop("_semantic_score", None)
+            item.pop("_exact_bonus", None)
             output.append(item)
         return output
 

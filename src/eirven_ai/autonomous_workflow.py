@@ -1,3 +1,8 @@
+# EIRVEN AI — 2.4.0
+# Copyright (c) 2026 Даниил Павлов. Все права защищены. / All rights reserved.
+# Лицензия: EIRVEN Non-Commercial License — см. файл LICENSE.
+# Обязательна видимая подпись «На базе Эрви». Скрывать её запрещено (см. LICENSE).
+# EIRVEN-LICENSE-HEADER
 from __future__ import annotations
 
 import hashlib
@@ -869,7 +874,7 @@ class AutonomousWorkflowEngine:
                 schema=schema,
                 num_ctx=1900,
                 num_predict=180,
-                keep_alive="45s",
+                keep_alive=self.services.settings.keep_alive,
                 timeout_seconds=5.5,
                 num_gpu=self._agent_num_gpu(),
             )
@@ -1296,7 +1301,8 @@ class AutonomousWorkflowEngine:
         try:
             data = self.gateway.json(
                 [{"role":"user","content":prompt}], model=self._planner_model(), temperature=0.0,
-                schema=schema, num_ctx=1450, num_predict=90, keep_alive="45s", timeout_seconds=4.2,
+                schema=schema, num_ctx=1450, num_predict=90,
+                keep_alive=self.services.settings.keep_alive, timeout_seconds=4.2,
                 num_gpu=self._agent_num_gpu(),
             )
             if isinstance(data, dict) and bool(data.get("done")) and float(data.get("confidence") or 0) >= .72:
@@ -1395,7 +1401,7 @@ class AutonomousWorkflowEngine:
                             if conversation_id:
                                 self._clear_pending(conversation_id)
                             self._trace("R16_DONE", goal=final_goal, step=step_no, evidence=evidence)
-                            return AutonomousResult(True, "Готово. Конечная цель достигнута и подтверждена по текущему состоянию.", history)
+                            return AutonomousResult(True, "Конечная цель достигнута и подтверждена по текущему состоянию.", history)
 
                 decision = self._decision(final_goal, observation, history, recovery)
                 # The local model call above is bounded but not instantaneous.  Re-check
@@ -1413,7 +1419,7 @@ class AutonomousWorkflowEngine:
                         self._record_experience(final_goal, observation, recovery, ok=True, verified=True, history=history)
                         if conversation_id:
                             self._clear_pending(conversation_id)
-                        return AutonomousResult(True, "Готово. Конечная цель достигнута и подтверждена по текущему состоянию.", history)
+                        return AutonomousResult(True, "Конечная цель достигнута и подтверждена по текущему состоянию.", history)
                     # A premature done is not fatal: force a fresh local action next round.
                     history.append({"action":"done","ok":False,"verified":False,"error":"completion evidence not grounded"})
                     continue

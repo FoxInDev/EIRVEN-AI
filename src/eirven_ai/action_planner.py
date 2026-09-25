@@ -1,7 +1,14 @@
+# EIRVEN AI — 2.4.0
+# Copyright (c) 2026 Даниил Павлов. Все права защищены. / All rights reserved.
+# Лицензия: EIRVEN Non-Commercial License — см. файл LICENSE.
+# Обязательна видимая подпись «На базе Эрви». Скрывать её запрещено (см. LICENSE).
+# EIRVEN-LICENSE-HEADER
 from __future__ import annotations
 
 from dataclasses import dataclass, asdict
 from typing import Any
+
+from .action_protocol import ActionPlan, deterministic_plan
 
 
 @dataclass(slots=True)
@@ -42,3 +49,16 @@ class ActionPlanner:
 
     def describe(self, action: str, target: str, *, camera: bool = False) -> list[dict[str, str]]:
         return [x.to_dict() for x in self.plan(action,target,camera=camera)]
+
+    def protocol(self, action: str, target: str, *, camera: bool = False) -> ActionPlan:
+        """Return the versioned, validated protocol used by new executor call sites."""
+        specs = []
+        for step in self.plan(action, target, camera=camera):
+            specs.append({
+                "goal": f"{step.kind}: {step.target}".strip(),
+                "mode": "desktop",
+                "tool": "deterministic",
+                "success": step.verify or "Наблюдаемое состояние подтверждает результат",
+                "failure_strategy": "replan" if step.fallback else "fail",
+            })
+        return deterministic_plan(f"{action} {target}".strip(), specs)

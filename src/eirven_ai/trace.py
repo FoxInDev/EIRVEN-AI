@@ -1,3 +1,8 @@
+# EIRVEN AI — 2.4.0
+# Copyright (c) 2026 Даниил Павлов. Все права защищены. / All rights reserved.
+# Лицензия: EIRVEN Non-Commercial License — см. файл LICENSE.
+# Обязательна видимая подпись «На базе Эрви». Скрывать её запрещено (см. LICENSE).
+# EIRVEN-LICENSE-HEADER
 from __future__ import annotations
 
 import json
@@ -7,6 +12,30 @@ from pathlib import Path
 from typing import Any
 
 _lock = threading.RLock()
+
+_SECRET_KEYS = {
+    "authorization", "password", "passwd", "token", "access_token",
+    "refresh_token", "mobile_access_token", "api_hash", "otp", "sms_code",
+    "cvv", "pin", "secret",
+}
+
+
+def _redact(value: Any, key: str = "") -> Any:
+    """Remove credentials and sensitive payloads before they reach disk."""
+    normalized = str(key or "").casefold()
+    if normalized in _SECRET_KEYS or any(marker in normalized for marker in ("password", "token", "secret", "api_hash", "otp", "cvv")):
+        return "[REDACTED]"
+    if isinstance(value, dict):
+        return {str(item_key): _redact(item_value, str(item_key)) for item_key, item_value in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_redact(item) for item in value]
+    if isinstance(value, str):
+        # Pairing codes are twenty uppercase alphanumerics, optionally grouped by dashes.
+        import re
+        text = re.sub(r"(?<![A-Z0-9])(?:[A-Z0-9]{5}-){3}[A-Z0-9]{5}(?![A-Z0-9])", "[PAIRING-CODE]", value)
+        text = re.sub(r"(?i)(authorization\s*[:=]\s*)(\S+)", r"\1[REDACTED]", text)
+        return text[:12000]
+    return value
 
 
 def log_event(root: str | Path, event: str, **payload: Any) -> None:
@@ -21,7 +50,7 @@ def log_event(root: str | Path, event: str, **payload: Any) -> None:
             "ts": time.strftime("%Y-%m-%d %H:%M:%S"),
             "mono": round(time.monotonic(), 3),
             "event": str(event),
-            **payload,
+            **_redact(payload),
         }
         text = json.dumps(row, ensure_ascii=False, default=str, separators=(",", ":")) + "\n"
         with _lock:

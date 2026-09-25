@@ -1,3 +1,8 @@
+# EIRVEN AI — 2.4.0
+# Copyright (c) 2026 Даниил Павлов. Все права защищены. / All rights reserved.
+# Лицензия: EIRVEN Non-Commercial License — см. файл LICENSE.
+# Обязательна видимая подпись «На базе Эрви». Скрывать её запрещено (см. LICENSE).
+# EIRVEN-LICENSE-HEADER
 from __future__ import annotations
 
 import os
@@ -109,6 +114,74 @@ class CapabilityRegistry:
         except Exception:
             pass
         return dict(result)
+
+    def snapshot(self, force: bool = False) -> dict[str, Any]:
+        """Return the executable capability graph seen by the action engine.
+
+        Earlier releases exposed only marketing-style feature booleans and
+        ``UniversalWorkflowEngine`` called a method that did not exist, silently losing
+        even the default browser.  The snapshot is intentionally cheap: authoritative
+        connectors and the actual tool schemas are included, while expensive UI trees
+        remain observations requested by the agent only when needed.
+        """
+        base = self.refresh(force=force)
+        tools: list[dict[str, Any]] = []
+        try:
+            for schema in self.services.tools.native_descriptions():
+                function = schema.get("function") or {}
+                name = str(function.get("name") or "")
+                if not name:
+                    continue
+                tools.append({
+                    "id": name,
+                    "available": True,
+                    "description": str(function.get("description") or "")[:240],
+                    "arguments": sorted(
+                        str(key) for key in ((function.get("parameters") or {}).get("properties") or {})
+                    ),
+                })
+        except Exception:
+            tools = []
+
+        mail: dict[str, Any] = {"available": False, "connected": False}
+        try:
+            status = dict(self.services.mail.public_status() or {})
+            monitor = dict(status.get("monitor") or {})
+            mail = {
+                "available": True,
+                "connected": bool(status.get("configured")),
+                "monitor_running": bool(monitor.get("running")),
+                "unread_count": int(monitor.get("unread_count") or monitor.get("unread") or 0),
+                "transport": "imap_smtp",
+            }
+        except Exception as exc:
+            mail["error"] = str(exc)[:180]
+
+        current_surface: dict[str, Any] = {}
+        try:
+            row = self.services.tools.execute("foreground_window", {})
+            if row.get("ok"):
+                value = row.get("result") or {}
+                current_surface = {
+                    key: value.get(key)
+                    for key in ("handle", "pid", "title", "class_name", "rectangle")
+                    if value.get(key) not in (None, "")
+                }
+        except Exception:
+            pass
+
+        base["contracts"] = {
+            "tools": tools,
+            "mail": mail,
+            "surface": current_surface,
+            "execution": {
+                "one_action_per_observation": True,
+                "surface_lease": True,
+                "postcondition_required": True,
+                "action_confirmation": True,
+            },
+        }
+        return base
 
     def has_app(self, key: str) -> bool:
         return bool(self.refresh().get("apps", {}).get(key))

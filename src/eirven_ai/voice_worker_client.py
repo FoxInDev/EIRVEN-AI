@@ -1,3 +1,8 @@
+# EIRVEN AI — 2.4.0
+# Copyright (c) 2026 Даниил Павлов. Все права защищены. / All rights reserved.
+# Лицензия: EIRVEN Non-Commercial License — см. файл LICENSE.
+# Обязательна видимая подпись «На базе Эрви». Скрывать её запрещено (см. LICENSE).
+# EIRVEN-LICENSE-HEADER
 from __future__ import annotations
 
 import base64
@@ -36,6 +41,7 @@ class VoiceWorkerClient:
         self._stderr_reader: threading.Thread | None = None
         self._stderr_lines: deque[str] = deque(maxlen=60)
         self._responses: dict[str, queue.Queue[dict[str, Any]]] = {}
+        self._response_owners: dict[str, int] = {}
         self._ready = threading.Event()
         self._fatal = ""
         self._last_engine = ""
@@ -107,13 +113,17 @@ class VoiceWorkerClient:
                     self._ready.set(); continue
                 request_id = str(message.get("id") or "")
                 with self._lock:
-                    target = self._responses.get(request_id)
+                    target = self._responses.get(request_id) if self._response_owners.get(request_id) == id(process) else None
                 if target:
                     target.put(message)
         finally:
-            self._ready.clear()
             with self._lock:
-                pending = list(self._responses.values())
+                if self._process is process:
+                    self._ready.clear()
+                pending = [
+                    target for rid, target in self._responses.items()
+                    if self._response_owners.get(rid) == id(process)
+                ]
             for target in pending:
                 target.put({"ok": False, "error": "Процесс распознавания завершился"})
 
@@ -126,10 +136,11 @@ class VoiceWorkerClient:
         payload = {"id": request_id, **payload}
         response_queue: queue.Queue[dict[str, Any]] = queue.Queue(maxsize=1)
         with self._lock:
-            self._responses[request_id] = response_queue
             process = self._process
             if not process or not process.stdin or process.poll() is not None:
                 raise VoiceWorkerError("Процесс распознавания недоступен")
+            self._responses[request_id] = response_queue
+            self._response_owners[request_id] = id(process)
             process.stdin.write(json.dumps(payload, ensure_ascii=True) + "\n")
             process.stdin.flush()
         try:
@@ -140,6 +151,7 @@ class VoiceWorkerClient:
         finally:
             with self._lock:
                 self._responses.pop(request_id, None)
+                self._response_owners.pop(request_id, None)
 
     def warmup(self, timeout: float = 240) -> str:
         response = self._request({"command": "warmup", "engine": self.engine}, timeout)
@@ -147,35 +159,43 @@ class VoiceWorkerClient:
             raise VoiceWorkerError(str(response.get("error") or "Не удалось подготовить ASR"))
         return str(response.get("engine") or self.engine)
 
-    def transcribe(self, path: str, timeout: float = 180) -> str:
+    def prime_primary(self, data: bytes, timeout: float = 90) -> str:
+        encoded = base64.b64encode(data).decode("ascii")
+        response = self._request({"command": "prime_primary", "audio_b64": encoded}, timeout)
+        if not response.get("ok"):
+            raise VoiceWorkerError(str(response.get("error") or "Не удалось выполнить ASR inference probe"))
+        return str(response.get("engine") or "gigaam")
+
+    def transcribe(self, path: str, timeout: float = 12) -> str:
         source = Path(path)
         if not source.is_file():
             raise VoiceWorkerError(f"Аудиофайл не найден: {source}")
         return self.transcribe_bytes(source.read_bytes(), source.suffix or ".wav", timeout=timeout)
 
-    def transcribe_bytes(self, data: bytes, suffix: str = ".wav", timeout: float = 180) -> str:
+    def transcribe_bytes(
+        self,
+        data: bytes,
+        suffix: str = ".wav",
+        timeout: float = 12,
+        *,
+        allow_fallback: bool = True,
+    ) -> str:
         if not data:
             return ""
         suffix = suffix if suffix.startswith(".") else f".{suffix}"
         encoded = base64.b64encode(data).decode("ascii")
-        for attempt in range(2):
-            try:
-                response = self._request({
-                    "command": "transcribe_bytes",
-                    "audio_b64": encoded,
-                    "suffix": suffix[:10],
-                }, timeout)
-                if not response.get("ok"):
-                    raise VoiceWorkerError(str(response.get("error") or "Неизвестная ошибка распознавания"))
-                self._last_engine = str(response.get("engine") or "")
-                self._last_fallback = str(response.get("fallback_reason") or "")
-                text = str(response.get("text") or "").strip()
-                return text or "Речь не распознана."
-            except Exception:
-                if attempt:
-                    raise
-                self.close(); time.sleep(0.2)
-        raise VoiceWorkerError("Не удалось распознать речь")
+        response = self._request({
+            "command": "transcribe_bytes",
+            "audio_b64": encoded,
+            "suffix": suffix[:10],
+            "allow_fallback": bool(allow_fallback),
+        }, timeout)
+        if not response.get("ok"):
+            raise VoiceWorkerError(str(response.get("error") or "Неизвестная ошибка распознавания"))
+        self._last_engine = str(response.get("engine") or "")
+        self._last_fallback = str(response.get("fallback_reason") or "")
+        text = str(response.get("text") or "").strip()
+        return text or "Речь не распознана."
 
     def status(self) -> dict[str, Any]:
         process = self._process

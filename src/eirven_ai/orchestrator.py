@@ -1,3 +1,8 @@
+# EIRVEN AI — 2.4.0
+# Copyright (c) 2026 Даниил Павлов. Все права защищены. / All rights reserved.
+# Лицензия: EIRVEN Non-Commercial License — см. файл LICENSE.
+# Обязательна видимая подпись «На базе Эрви». Скрывать её запрещено (см. LICENSE).
+# EIRVEN-LICENSE-HEADER
 from __future__ import annotations
 
 import re
@@ -71,11 +76,11 @@ class IntentRouter:
         r"(?:^\s*(?:пожалуйста[, ]+)?|\b(?:надо|нужно|можешь|пожалуйста)\s+)"
         r"(сделай|выполни|открой|запусти|включи|закрой|найди|проверь|скачай|установи|"
         r"настрой|перемести|скопируй|создай папку|введи|напиши в|ответь в|заполни|нажми|"
-        r"перейди|подключись|закоммить|закоммитить|запушь|запушить|клонируй|удали|переименуй)\b",
+        r"перейди|подключись|закоммить|закоммитить|запушь|запушить|клонируй|удали|переименуй|измени|замени|поменяй|допиши|дополни)\b",
         re.IGNORECASE,
     )
     SYSTEM_TASK = re.compile(
-        r"\b(git|github|репозитор|коммит|commit|push|powershell|терминал|процесс|служб|"
+        r"\b(git|репозитор|коммит|commit|push|powershell|терминал|процесс|служб|"
         r"папк[аеуы]?|файл[а-я]*|рабоч(?:ий|ем) стол|desktop|ssh|docker|compose|kubernetes|"
         r"telegram|телеграм|браузер|окн[оа]|приложен)\b", re.IGNORECASE
     )
@@ -86,7 +91,7 @@ class IntentRouter:
             return None
         if self.GIT_ACTION.search(clean):
             remote = ""
-            match = re.search(r"(?:git@[^\s]+|https://(?:www\.)?github\.com/[^\s]+)", clean, re.IGNORECASE)
+            match = re.search(r"(?:git@[^\s]+|https://[^\s]+)", clean, re.IGNORECASE)
             if match:
                 remote = match.group(0).rstrip(".,)")
             return IntentResult(

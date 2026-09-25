@@ -1,3 +1,8 @@
+# EIRVEN AI — 2.4.0
+# Copyright (c) 2026 Даниил Павлов. Все права защищены. / All rights reserved.
+# Лицензия: EIRVEN Non-Commercial License — см. файл LICENSE.
+# Обязательна видимая подпись «На базе Эрви». Скрывать её запрещено (см. LICENSE).
+# EIRVEN-LICENSE-HEADER
 from __future__ import annotations
 
 import re
@@ -34,7 +39,9 @@ def _below_thousand(n: int, *, feminine: bool = False) -> str:
     elif n in _TENS:
         parts.append(_TENS[n])
     elif n:
-        parts.extend((_TENS[(n // 10) * 10], _ONES[n % 10]))
+        one = n % 10
+        word = "одна" if feminine and one == 1 else ("две" if feminine and one == 2 else _ONES[one])
+        parts.extend((_TENS[(n // 10) * 10], word))
     return " ".join(parts)
 
 
@@ -67,6 +74,15 @@ def cardinal(n: int) -> str:
     return " ".join(parts)
 
 
+def cardinal_feminine(n: int) -> str:
+    n = int(n)
+    if n < 0:
+        return "минус " + cardinal_feminine(-n)
+    if n < 1000:
+        return _below_thousand(n, feminine=True) if n else _ONES[0]
+    return cardinal(n)
+
+
 def decimal_phrase(value: float, digits: int = 2) -> str:
     """TTS-safe Russian decimal, e.g. 81.25 -> 'восемьдесят один рубль двадцать пять копеек' pieces."""
     rounded=round(float(value), max(0,int(digits)))
@@ -92,7 +108,7 @@ def _form(n: int, one: str, few: str, many: str) -> str:
 def time_phrase(dt: datetime | None = None) -> str:
     dt=dt or datetime.now()
     h,m=dt.hour,dt.minute
-    return f"Сейчас {cardinal(h)} {_form(h,'час','часа','часов')} {cardinal(m)} {_form(m,'минута','минуты','минут')}."
+    return f"Сейчас {cardinal(h)} {_form(h,'час','часа','часов')} {cardinal_feminine(m)} {_form(m,'минута','минуты','минут')}."
 
 
 def date_phrase(dt: datetime | None = None) -> str:
@@ -136,7 +152,7 @@ _KNOWN_LATIN = {
     "android": "андроид", "apple": "эппл", "bluetooth": "блютус", "browser": "браузер",
     "client": "клиент", "code": "код", "desktop": "десктоп", "discord": "дискорд",
     "download": "даунлоуд", "edge": "эдж", "error": "эррор", "file": "файл",
-    "folder": "фолдер", "github": "гитхаб", "google": "гугл", "hello": "хеллоу",
+    "folder": "фолдер", "google": "гугл", "hello": "хеллоу",
     "linux": "линукс", "mobile": "мобайл", "offline": "офлайн", "online": "онлайн",
     "open": "оупен", "pause": "пауза", "play": "плэй", "playwright": "плэйрайт",
     "python": "пайтон", "server": "сервер", "silero": "силеро", "spotify": "спотифай",

@@ -1,7 +1,12 @@
+# EIRVEN AI — 2.4.0
+# Copyright (c) 2026 Даниил Павлов. Все права защищены. / All rights reserved.
+# Лицензия: EIRVEN Non-Commercial License — см. файл LICENSE.
+# Обязательна видимая подпись «На базе Эрви». Скрывать её запрещено (см. LICENSE).
+# EIRVEN-LICENSE-HEADER
 from __future__ import annotations
 
-import hashlib
 import io
+import json
 import tempfile
 import threading
 import time
@@ -44,7 +49,6 @@ class VoiceService:
         self._tts_worker = TTSWorkerClient(settings.root_dir)
         self._stt_ready = threading.Event()
         self._tts_ready = threading.Event()
-        self._tts_cache_lock = threading.RLock()
         self._synthesis_active = threading.Event()
         # r22: ASR remains the only hard prerequisite for *listening*, but the selected
         # local TTS weights are loaded silently immediately after ASR becomes ready.  This
@@ -53,7 +57,7 @@ class VoiceService:
         # model was warming in parallel; prioritising the voice worker removes that cold
         # penalty from normal interaction without delaying microphone acceptance.
         # r22 final startup: load ASR and the small local TTS weights in parallel.
-        # Qwen is deliberately held back at app level until both are ready.  In live logs
+        # Expressive engines are deliberately held back until both are ready. In live logs
         # the owner spoke ~6 s after launch; sequential ASR->TTS loading made that first
         # reply wait another 6+ s.  Parallel voice-only loading makes the first accepted
         # turn useful sooner without synthesizing or playing any dummy phrase.
@@ -62,20 +66,32 @@ class VoiceService:
 
     def _prewarm_stt(self) -> None:
         started = time.monotonic()
-        try:
-            # Give the Russian ASR model first access to CPU/RAM. r14 started STT, TTS,
-            # self-test and LLM warm-up together; the first utterance then waited >12 s.
-            self._stt_worker.warmup(timeout=180)
-            # Loading weights is not enough for ONNX/GigaAM: the first actual graph run
-            # in the attached trace still took 21.1 seconds. Pay that cost on a harmless
-            # silent WAV before the microphone is considered interactive.
-            self._stt_worker.transcribe_bytes(self._probe_wav(), ".wav", timeout=90)
-            self._voice_runtime["stt_inference_primed"] = True
-        except Exception as exc:
-            self._voice_runtime["stt_prewarm_error"] = str(exc)[:300]
-        finally:
-            self._voice_runtime["stt_prewarm_ms"] = round((time.monotonic() - started) * 1000)
-            self._stt_ready.set()
+        # This used to run once and set the ready flag only on complete success. Any
+        # single failure (device busy, model file still locked, timeout under load)
+        # left stt_ready() False for the whole session -- and because voice_daemon
+        # discards every captured block until that flag is set, the microphone stayed
+        # open while hearing nothing, with no error shown anywhere in the UI. Recovery
+        # required restarting the whole app. Retry instead, with growing gaps.
+        delays = (0.0, 5.0, 15.0, 30.0, 60.0)
+        for attempt, delay in enumerate(delays):
+            if delay:
+                time.sleep(delay)
+            try:
+                # Loading weights is not enough for ONNX/GigaAM: the first actual graph
+                # run in the attached trace still took 21.1 seconds. Pay that cost on a
+                # harmless silent WAV before the microphone is considered interactive.
+                self._stt_worker.warmup(timeout=180)
+                self._stt_worker.prime_primary(self._probe_wav(), timeout=90)
+                self._voice_runtime["stt_inference_primed"] = True
+                self._voice_runtime["stt_prewarm_attempts"] = attempt + 1
+                self._voice_runtime.pop("stt_prewarm_error", None)
+                self._voice_runtime["stt_prewarm_ms"] = round((time.monotonic() - started) * 1000)
+                self._stt_ready.set()
+                return
+            except Exception as exc:
+                self._voice_runtime["stt_prewarm_error"] = str(exc)[:300]
+                self._voice_runtime["stt_prewarm_attempts"] = attempt + 1
+        self._voice_runtime["stt_prewarm_ms"] = round((time.monotonic() - started) * 1000)
 
     def stt_ready(self) -> bool:
         """True only after the isolated Russian ASR model finished its cold load."""
@@ -107,51 +123,82 @@ class VoiceService:
         return out.getvalue()
 
     def _prewarm_tts(self) -> None:
-        """Lock the real Silero Baya speaker for the entire process and prime it."""
+        """Load and inference-probe the one canonical local Baya voice."""
         started = time.monotonic()
         errors: list[str] = []
-        identity = self.identity.get() if self.identity else None
-        selected_key = str(getattr(identity, "voice_key", "") or "")
-        locked = False
-        try:
-            # The r28 field trace proved that the UI label "Baya" was backed by Piper
-            # Irina.  That is a different speaker and caused the foreign/robotic voice the
-            # owner heard.  Baya is an actual speaker inside Silero v5.5 RU, so it is the
-            # only supported speech engine.  If it cannot load we keep the text answer and
-            # report the fault instead of silently substituting another person.
-            if self.settings.silero_model:
-                try:
-                    silero_path = Path(self.settings.silero_model).expanduser().resolve()
-                    if not silero_path.is_file():
-                        raise VoiceError(f"Silero не найден: {silero_path}")
-                    self._tts_worker.preload(str(silero_path), engine="silero", timeout=30)
-                    self._voice_runtime.update({
-                        "locked_tts_engine": "silero",
-                        "locked_tts_model": str(silero_path),
-                        "locked_tts_speaker": "baya",
-                        "locked_voice_key": selected_key or "irina_soft",
-                        "prewarmed_tts_engine": "silero:baya:session-locked",
-                    })
-                    locked = True
-                except Exception as exc:
-                    errors.append(f"Silero Baya: {exc}")
+        # A single failure used to lock the engine to "unavailable" for the whole
+        # session: she kept answering in text while every spoken reply raised
+        # "Локальный голос Бая не загрузился", with recovery only via restart. The
+        # first attempt also has to cover a cold torch import plus a 138 MB package
+        # load while the LLM prewarm competes for the same disk and CPU, which does
+        # not reliably fit in 30 seconds.
+        attempts = ((0.0, 90), (6.0, 120), (20.0, 150), (45.0, 180))
+        for index, (delay, timeout) in enumerate(attempts):
+            if delay:
+                time.sleep(delay)
+            try:
+                silero_path = Path(self.settings.silero_model).expanduser().resolve()
+                if not silero_path.is_file() and index == 0:
+                    # The model has disappeared more than once on a working install
+                    # (antivirus quarantine and folder cleanups are the usual causes).
+                    # It has a known source and size, so restore it instead of leaving
+                    # the assistant mute until someone runs a command by hand.
+                    try:
+                        self._voice_runtime["tts_prewarm_error"] = "Файл голоса пропал — восстанавливаю…"
+                        silero_path.parent.mkdir(parents=True, exist_ok=True)
+                        import torch  # local import: heavy, and only needed here
 
-            if not locked:
+                        torch.hub.download_url_to_file(
+                            "https://models.silero.ai/models/tts/ru/v5_5_ru.pt",
+                            str(silero_path), progress=False,
+                        )
+                    except Exception as exc:
+                        self._voice_runtime["tts_prewarm_error"] = (
+                            f"Файл голоса не найден: {silero_path}. "
+                            f"Автовосстановление не удалось: {str(exc)[:200]}"
+                        )
+                if not silero_path.is_file():
+                    # A missing file is not a transient condition: retrying cannot
+                    # create it, and the generic failure message hid the one thing
+                    # that actually needed doing. Stop immediately and say where.
+                    self._voice_runtime["locked_tts_engine"] = "unavailable"
+                    self._voice_runtime.setdefault(
+                        "tts_prewarm_error",
+                        f"Файл голоса не найден: {silero_path}.",
+                    )
+                    self._voice_runtime["tts_prewarm_ms"] = round((time.monotonic() - started) * 1000)
+                    self._tts_ready.set()
+                    return
+                self._tts_worker.preload(str(silero_path), engine="silero", timeout=timeout)
+                self._voice_runtime.update({
+                    "locked_tts_engine": "silero",
+                    "locked_tts_model": str(silero_path),
+                    "locked_tts_speaker": "baya",
+                    "locked_voice_key": "ervi_soft",
+                    "prewarmed_tts_engine": "silero:baya",
+                })
+                # One very short real inference pays the phonemisation/kernel cold cost.
+                # Warming several full phrases delayed readiness and could queue ahead of the
+                # owner's first reply; one probe is sufficient for the resident Baya model.
+                self.synthesize("Готова.", mode="natural", voice_key="ervi_soft")
+                self._voice_runtime["tts_inference_primed"] = True
+                self._voice_runtime["tts_prewarm_attempts"] = index + 1
+                self._voice_runtime.pop("tts_prewarm_error", None)
+                self._voice_runtime["tts_prewarm_ms"] = round((time.monotonic() - started) * 1000)
+                self._tts_ready.set()
+                return
+            except Exception as exc:
+                errors.append(f"попытка {index + 1}: {exc}")
+                self._voice_runtime["tts_prewarm_attempts"] = index + 1
+                # Never replace Baya by an unrelated system/network voice after failure.
                 self._voice_runtime["locked_tts_engine"] = "unavailable"
-                raise VoiceError("Локальный голос Baya не загрузился")
-
-            # Pay phonemisation/kernel cost before microphone interaction and cache the
-            # two latency-critical responses. Both use the same locked speaker.
-            self.synthesize("Привет, бро. Я на связи. Что делаем?", mode="warm")
-            self.synthesize("Остановила.", mode="calm")
-            self._voice_runtime["tts_inference_primed"] = True
-        except Exception as exc:
-            errors.append(f"TTS inference probe: {exc}")
-        finally:
-            self._voice_runtime["tts_prewarm_ms"] = round((time.monotonic() - started) * 1000)
-            if errors:
-                self._voice_runtime["tts_prewarm_error"] = " | ".join(errors)[:500]
-            self._tts_ready.set()
+                # Let the first reply fall back to text immediately rather than
+                # blocking on a 30s wait inside synthesize while retries continue.
+                self._tts_ready.set()
+        self._voice_runtime["tts_prewarm_ms"] = round((time.monotonic() - started) * 1000)
+        if errors:
+            self._voice_runtime["tts_prewarm_error"] = " | ".join(errors)[:500]
+        self._tts_ready.set()
 
     @staticmethod
     def _valid_piper_model(path: Path) -> bool:
@@ -201,12 +248,7 @@ class VoiceService:
         return models
 
     def status(self) -> dict[str, Any]:
-        models = self._voice_models()
-        available = {
-            key: str(Path(path).expanduser())
-            for key, path in models.items()
-            if Path(path).expanduser().is_file()
-        }
+        available: dict[str, str] = {}
         identity = self.identity.get() if self.identity else None
         gigaam_ready = self._module_exists("onnx_asr")
         whisper_ready = self._module_exists("faster_whisper")
@@ -217,9 +259,9 @@ class VoiceService:
             and self._valid_piper_model(piper_model)
             and piper_config and piper_config.is_file()
         )
-        expressive_ready = self._module_exists("qwen_tts")
+        expressive_ready = False
         chatterbox_ready = self._module_exists("chatterbox")
-        edge_tts_ready = self._module_exists("edge_tts")
+        edge_tts_ready = False
         silero_path = Path(self.settings.silero_model).expanduser() if self.settings.silero_model else None
         silero_ready = bool(silero_path and silero_path.is_file() and silero_path.stat().st_size > 1_000_000)
         baya_ready = bool(
@@ -228,9 +270,15 @@ class VoiceService:
             and self._voice_runtime.get("locked_tts_engine") == "silero"
             and self._voice_runtime.get("locked_tts_speaker") == "baya"
         )
+        selected_engine = str(self._voice_runtime.get("locked_tts_engine") or "")
+        selected_ready = bool(
+            self._tts_ready.is_set()
+            and self._voice_runtime.get("tts_inference_primed")
+            and selected_engine == "silero"
+            and self._voice_runtime.get("locked_tts_speaker") == "baya"
+        )
         if silero_ready:
-            for key, item in VOICE_CATALOG.items():
-                available.setdefault(key, f"silero:{item.get('silero_speaker') or 'kseniya'}")
+            available["ervi_soft"] = "silero:baya"
         stt_status = self._stt_worker.status()
         return {
             "stt_ready": gigaam_ready or whisper_ready,
@@ -239,11 +287,13 @@ class VoiceService:
             "interactive_ready": self.interactive_ready(),
             "stt_primary_ready": gigaam_ready,
             "stt_fallback_ready": whisper_ready,
-            # Public readiness means the selected Baya speaker is available.  Merely
-            # having SAPI/Piper/another optional package must not turn this indicator
-            # green while a different person is speaking.
-            "tts_ready": baya_ready,
-            "tts_engine": "silero" if baya_ready else "none",
+            # Public readiness follows the engine that was actually inference-probed.
+            # The offline Baya flag remains separate so degraded operation is visible.
+            "tts_ready": selected_ready,
+            "tts_engine": selected_engine if selected_ready else "none",
+            "tts_prewarm_error": str(self._voice_runtime.get("tts_prewarm_error") or ""),
+            "tts_prewarm_attempts": int(self._voice_runtime.get("tts_prewarm_attempts") or 0),
+            "tts_prewarm_ms": int(self._voice_runtime.get("tts_prewarm_ms") or 0),
             "chatterbox_ready": chatterbox_ready,
             "edge_tts_ready": edge_tts_ready,
             "silero_ready": silero_ready,
@@ -262,7 +312,9 @@ class VoiceService:
             "tts_process": self._tts_worker.status(),
             "last_tts_engine": self._voice_runtime.get("last_tts_engine", ""),
             "locked_tts_engine": self._voice_runtime.get("locked_tts_engine", ""),
+            "locked_tts_speaker": self._voice_runtime.get("locked_tts_speaker", ""),
             "locked_voice_key": self._voice_runtime.get("locked_voice_key", ""),
+            "alternate_tts_enabled": False,
             "stt_prewarm_ms": self._voice_runtime.get("stt_prewarm_ms"),
             "tts_prewarm_ms": self._voice_runtime.get("tts_prewarm_ms"),
             "synthesis_active": self._synthesis_active.is_set(),
@@ -285,10 +337,17 @@ class VoiceService:
 
     @staticmethod
     def _module_exists(name: str) -> bool:
+        """Probe an optional native module without making health/status fragile.
+
+        A package can be discoverable while importing its DLL fails (missing runtime,
+        incompatible CUDA/ONNX build, or a locked binary).  Availability probes must
+        report ``False`` for all ordinary import failures; they must never turn
+        ``/api/health`` into HTTP 500.  Process-control exceptions still propagate.
+        """
         try:
             __import__(name)
             return True
-        except ImportError:
+        except Exception:
             return False
 
     @staticmethod
@@ -326,18 +385,25 @@ class VoiceService:
             self._voice_runtime["fallback_reason"] = str(exc)[:300]
             raise VoiceError(f"Не удалось распознать речь: {exc}") from exc
 
-    def transcribe_bytes(self, data: bytes, suffix: str = ".wav") -> str:
+    def transcribe_bytes(self, data: bytes, suffix: str = ".wav", *, allow_fallback: bool = True) -> str:
         if not data:
             return ""
         try:
-            return self._stt_worker.transcribe_bytes(data, suffix)
+            return self._stt_worker.transcribe_bytes(data, suffix, allow_fallback=allow_fallback)
         except VoiceWorkerError as exc:
             self._voice_runtime["fallback_reason"] = str(exc)[:300]
             raise VoiceError(f"Не удалось распознать речь: {exc}") from exc
 
     def _resolve_mode(self, text: str, mode: str | None, emotion: str | None) -> str:
         identity = self.identity.get() if self.identity else None
-        selected = mode or (identity.voice_mode if identity else "natural")
+        # A caller such as the live voice daemon has already combined the owner's vocal
+        # affect with the meaning of the reply.  Preserve that explicit direction instead
+        # of letting a keyword in the reply overwrite it a second time.
+        if emotion in VOICE_MODES:
+            return str(emotion)
+        if mode in VOICE_MODES:
+            return str(mode)
+        selected = identity.voice_mode if identity else "natural"
         emotion_mode = emotion or (identity.emotion_mode if identity else "auto")
         if emotion_mode == "auto":
             inferred = IdentityService.infer_emotion(text)
@@ -349,13 +415,16 @@ class VoiceService:
 
     @staticmethod
     def _prepare_text(text: str, mode: str) -> str:
-        clean = speech_ready_text(text)
+        clean = " ".join(speech_ready_text(text).split())
         if mode in {"energetic", "amused", "proud"}:
             clean = clean.replace("…", ".").replace("...", ".")
         if mode == "strict":
             clean = clean.replace("!", ".")
         if mode in {"sad", "empathetic", "tired"}:
-            clean = clean.replace(";", ",").replace(" — ", ", ")
+            # Semicolons and em dashes become explicit phrase boundaries in Silero's
+            # neural punctuation model.  The worker turns those boundaries into short
+            # clean silences; no synthetic inhale sample or spoken markup is injected.
+            clean = clean.replace(" — ", "; ")
         return clean
 
     @staticmethod
@@ -429,17 +498,12 @@ class VoiceService:
             base -= 0.02
         return max(0.88, min(base, 1.08))
 
-    def _store_tts_audio(self, data: bytes, output: Path, cache_path: Path, volume: float) -> str:
+    def _store_tts_audio(self, data: bytes, output: Path, volume: float) -> str:
         if len(data) < 44 or not data.startswith(b"RIFF"):
             raise VoiceError("Локальный голос создал повреждённое аудио")
         output.write_bytes(data)
         self._postprocess_wav(output, float(volume))
-        with self._tts_cache_lock:
-            if cache_path.is_file() and cache_path.stat().st_size >= 44:
-                output.unlink(missing_ok=True)
-            else:
-                output.replace(cache_path)
-        return str(cache_path)
+        return str(output)
 
     def synthesize(
         self,
@@ -454,6 +518,10 @@ class VoiceService:
             raise VoiceError("Пустой текст для озвучивания")
         selected_mode = self._resolve_mode(text, mode, emotion)
         profile = dict(VOICE_MODES[selected_mode])
+        # The worker needs the semantic mode explicitly; VOICE_MODES stores only the
+        # numeric controls. Without this field every locked Edge utterance falls back
+        # to the same neutral prosody.
+        profile["mode"] = selected_mode
         identity = self.identity.get() if self.identity else None
         # r21: speed and emotion are automatic. A manual slider made the voice sound
         # uniformly accelerated/robotic; each utterance now gets a small semantic tempo.
@@ -464,9 +532,31 @@ class VoiceService:
             output_volume = float(self.db.get_setting("voice_output_volume", 0.82)) if self.db is not None else 0.82
         except Exception:
             output_volume = 0.82
-        profile["volume"] = max(0.0, min(output_volume, 1.0)) * float(profile.get("volume", 1.0))
-        requested_voice = voice_key or (identity.voice_key if identity else None)
-        voice_preset = VOICE_CATALOG.get(str(requested_voice or ""), {})
+        # Keep the owner's volume preference as the ceiling while allowing the
+        # emotional profile to breathe: energetic/proud delivery is a little more
+        # present, while intimate/sad delivery is softer.  This is deliberately a
+        # small gain change, not loudness normalisation that would erase emotion.
+        profile["energy_gain"] = max(0.82, min(float(profile.get("energy_gain", 1.0)), 1.08))
+        profile["volume"] = (
+            max(0.0, min(output_volume, 1.0))
+            * float(profile.get("volume", 1.0))
+            * profile["energy_gain"]
+        )
+        profile["pitch_ratio"] = max(0.965, min(float(profile.get("pitch_ratio", 1.0)), 1.035))
+        # Silero is deterministic by design.  A tiny per-utterance seed keeps pauses
+        # and the pitch contour from being byte-identical on every repeated greeting,
+        # while the bounded jitter remains far below a semitone and never changes Baya's
+        # identity.  No spoken text or response is cached.
+        prosody_seed = (time.time_ns() ^ id(profile)) & 0xFFFFFFFF
+        profile["prosody_seed"] = prosody_seed
+        profile["pitch_ratio"] = max(
+            0.965,
+            min(1.035, float(profile["pitch_ratio"]) * (1.0 + ((prosody_seed % 17) - 8) * 0.00018)),
+        )
+        # Public EIRVEN has one stable voice identity. Legacy/API voice keys are ignored
+        # instead of silently selecting a different speaker.
+        requested_voice = "ervi_soft"
+        voice_preset = VOICE_CATALOG["ervi_soft"]
         for key in ("length_scale", "noise_scale", "noise_w"):
             if key in voice_preset:
                 # Voice identity shapes the base timbre while the selected emotion mode
@@ -476,212 +566,30 @@ class VoiceService:
         output_dir = self.settings.data_dir / "audio"
         output_dir.mkdir(parents=True, exist_ok=True)
         output = output_dir / f"reply-{datetime.now().strftime('%Y%m%d-%H%M%S-%f')}.wav"
-        # Never reuse r28 Piper/Irina audio under the user-facing Baya identity.
-        cache_dir = output_dir / "cache-v4-baya"
-        cache_dir.mkdir(parents=True, exist_ok=True)
         locked_engine = str(self._voice_runtime.get("locked_tts_engine") or "")
-        cache_payload = "|".join((
-            locked_engine or str(self.settings.tts_engine or "auto"), str(requested_voice or "default"),
-            selected_mode, f"{float(profile['volume']):.3f}", prepared,
-        ))
-        cache_path = cache_dir / (hashlib.sha256(cache_payload.encode("utf-8")).hexdigest()[:32] + ".wav")
-        with self._tts_cache_lock:
-            if cache_path.is_file() and cache_path.stat().st_size >= 44:
-                self._voice_runtime["last_tts_engine"] = f"audio_cache:{locked_engine or 'legacy'}"
-                return str(cache_path)
-        errors: list[str] = []
-        data: bytes | None = None
-
-        # Normal interaction waits for prewarm, but direct API previews can arrive while
-        # startup is still selecting the voice. Give that selector a short bounded chance.
+        # A direct preview can arrive while the preload thread is still selecting the
+        # resident model. Wait for the canonical voice lock before synthesizing.
         if not locked_engine and not self._tts_ready.is_set():
             self._tts_ready.wait(30.0)
             locked_engine = str(self._voice_runtime.get("locked_tts_engine") or "")
-
-        if locked_engine:
-            if locked_engine == "unavailable":
-                raise VoiceError("Фирменный голос Эйрвен не загрузился; другой голос автоматически не включаю")
-            self._synthesis_active.set()
-            try:
-                if locked_engine == "piper_onnx":
-                    model_path = str(self._voice_runtime.get("locked_tts_model") or "")
-                    if not model_path:
-                        _key, resolved = self._resolve_voice(requested_voice)
-                        model_path = str(resolved)
-                    data = self._tts_worker.synthesize(
-                        prepared, model_path, profile, engine="piper_onnx", timeout=5.0,
-                    )
-                elif locked_engine == "silero":
-                    model_path = str(self._voice_runtime.get("locked_tts_model") or self.settings.silero_model)
-                    speaker = str(self._voice_runtime.get("locked_tts_speaker") or voice_preset.get("silero_speaker") or "baya")
-                    data = self._tts_worker.synthesize(
-                        prepared, model_path, profile, engine="silero", speaker=speaker, timeout=15.0,
-                    )
-                else:
-                    raise VoiceError(f"Неподдерживаемый закреплённый голос: {locked_engine}")
-            except (TTSWorkerError, OSError) as exc:
-                # Do not change speaker after a failure. A text answer is preferable to
-                # an unexpected timbre or malformed/gibberish audio.
-                raise VoiceError(f"Фирменный голос временно недоступен: {exc}") from exc
-            finally:
-                self._synthesis_active.clear()
-            self._voice_runtime["last_tts_engine"] = f"{locked_engine}:session-locked"
-            return self._store_tts_audio(data or b"", output, cache_path, float(profile["volume"]))
-
-        # r8: a UI voice choice must correspond to a real speaker, not just a label.
-        # Neural Svetlana/Dmitry prefer Edge Read Aloud (no API key); the other catalog
-        # entries use genuinely different Silero speakers. On CUDA, Chatterbox may clone
-        # a local per-speaker reference and adds expressive prosody without collapsing all
-        # choices into one default voice.
-        engine = (self.settings.tts_engine or "auto").lower()
-        preferred_engine = str(voice_preset.get("preferred_engine") or "").lower()
-        profile["exaggeration"] = {
-            "natural": .50, "warm": .60, "calm": .40, "energetic": .76,
-            "strict": .35, "quiet": .32, "amused": .82, "sad": .46,
-            "empathetic": .58, "curious": .67, "concerned": .54,
-            "proud": .68, "tired": .37,
-        }.get(selected_mode, .5)
-        profile["cfg_weight"] = .5
-        profile["mode"] = selected_mode
-        reference = str(voice_preset.get("reference") or "").strip()
-        reference_path = (self.settings.root_dir / reference).resolve() if reference else None
-        if reference_path and reference_path.is_file():
-            profile["audio_prompt_path"] = str(reference_path)
-
-        edge_cooldown = float(self._voice_runtime.get("edge_disabled_until") or 0)
-
-        # On capable CUDA hardware the local cloned voice is the most expressive route.
-        # A reference is preferred, but Chatterbox's validated default Russian voice is still
-        # more prosodic than the low-latency monotone fallback.
-        if (
-            data is None
-            and engine in {"auto", "natural", "chatterbox_mtl"}
-            and self._module_exists("chatterbox") and self._cuda_available()
-        ):
-            try:
-                data = self._tts_worker.synthesize(
-                    prepared, "", profile, engine="chatterbox_mtl", timeout=18
-                )
-                self._voice_runtime["last_tts_engine"] = "chatterbox_mtl"
-            except (TTSWorkerError, VoiceError, OSError) as exc:
-                errors.append(f"Chatterbox RU: {exc}")
-
-        # Stable order after the expressive local route: emotion-capable Edge neural voice
-        # -> selected local Piper with per-mode prosody -> Silero safety net. Windows SAPI is
-        # never an automatic fallback.
-        if (
-            data is None and preferred_engine == "edge_tts"
-            and engine in {"auto", "natural", "edge_tts", "chatterbox_mtl", "silero"}
-            and self._module_exists("edge_tts") and time.monotonic() >= edge_cooldown
-        ):
-            try:
-                data = self._tts_worker.synthesize(
-                    prepared, "", profile, engine="edge_tts",
-                    speaker=str(voice_preset.get("edge_voice") or "ru-RU-SvetlanaNeural"), timeout=2.2,
-                )
-                self._voice_runtime["last_tts_engine"] = "edge_tts"
-            except (TTSWorkerError, VoiceError, OSError) as exc:
-                self._voice_runtime["edge_disabled_until"] = time.monotonic() + 120.0
-                errors.append(f"Edge neural RU: {exc}")
-
-        # Preserve identity for Edge-backed voices when network speech is unavailable:
-        # use that catalog voice's own local Piper model before a generic Silero speaker.
-        if data is None and preferred_engine == "edge_tts" and engine in {"auto", "natural", "edge_tts", "chatterbox_mtl", "silero"}:
-            try:
-                _key, voice_path = self._resolve_voice(requested_voice)
-                data = self._tts_worker.synthesize(
-                    prepared, str(voice_path), profile, engine="piper_onnx", timeout=3.0,
-                )
-                self._voice_runtime["last_tts_engine"] = "piper_onnx_selected_fallback"
-            except (TTSWorkerError, VoiceError) as exc:
-                errors.append(f"Selected Piper-ONNX: {exc}")
-
-        # For non-Edge catalog voices, local Piper is dramatically faster on the Windows
-        # CPU profile from the logs. Emotion still changes prosody through the per-mode
-        # length/noise profile; Silero remains a quality fallback rather than the default
-        # 10-16 second conversational path.
-        if data is None and preferred_engine != "edge_tts" and engine in {"auto", "natural", "chatterbox_mtl", "edge_tts", "piper_onnx"}:
-            try:
-                _key, voice_path = self._resolve_voice(requested_voice)
-                data = self._tts_worker.synthesize(
-                    prepared, str(voice_path), profile, engine="piper_onnx", timeout=4.0,
-                )
-                self._voice_runtime["last_tts_engine"] = "piper_onnx_low_latency"
-            except (TTSWorkerError, VoiceError) as exc:
-                errors.append(f"Piper-ONNX fast lane: {exc}")
-
-        if data is None and engine in {"auto", "natural", "silero", "chatterbox_mtl", "edge_tts"} and self.settings.silero_model:
-            try:
-                silero_path = Path(self.settings.silero_model).expanduser().resolve()
-                data = self._tts_worker.synthesize(
-                    prepared, str(silero_path), profile, engine="silero",
-                    speaker=str(voice_preset.get("silero_speaker") or "kseniya"), timeout=12.0,
-                )
-                self._voice_runtime["last_tts_engine"] = "silero"
-            except (TTSWorkerError, VoiceError, OSError) as exc:
-                errors.append(f"Silero RU: {exc}")
-
-        # Piper is the local emergency voice and therefore comes BEFORE any system voice.
-        if data is None and engine not in {"qwen3", "qwen3_design", "sapi", "silero"}:
-            try:
-                _key, voice_path = self._resolve_voice(requested_voice)
-                data = self._tts_worker.synthesize(
-                    prepared, str(voice_path), profile, engine="piper_onnx", timeout=3.0,
-                )
-                self._voice_runtime["last_tts_engine"] = "piper_onnx"
-            except (TTSWorkerError, VoiceError) as exc:
-                errors.append(f"Piper-ONNX: {exc}")
-
-        # Non-Edge presets may use the neural network voice only after local engines fail.
-        if (
-            data is None and preferred_engine != "edge_tts"
-            and engine in {"auto", "natural", "edge_tts", "chatterbox_mtl"}
-            and self._module_exists("edge_tts") and time.monotonic() >= edge_cooldown
-        ):
-            try:
-                data = self._tts_worker.synthesize(
-                    prepared, "", profile, engine="edge_tts",
-                    speaker=str(voice_preset.get("edge_voice") or "ru-RU-SvetlanaNeural"), timeout=2.5,
-                )
-                self._voice_runtime["last_tts_engine"] = "edge_tts_fallback"
-            except (TTSWorkerError, VoiceError, OSError) as exc:
-                self._voice_runtime["edge_disabled_until"] = time.monotonic() + 120.0
-                errors.append(f"Edge neural RU: {exc}")
-
-        if data is None and engine == "qwen3_design":
-            try:
-                data = self._tts_worker.synthesize(
-                    prepared, "", profile, engine="qwen3_design",
-                    model_name=self.settings.expressive_tts_design_model,
-                    instruction=self._emotion_instruction(selected_mode),
-                    design_prompt=str(voice_preset.get("design_prompt") or ""),
-                    timeout=60,
-                )
-                self._voice_runtime["last_tts_engine"] = "qwen3_design"
-            except (TTSWorkerError, VoiceError) as exc:
-                errors.append(f"Qwen3-TTS VoiceDesign: {exc}")
-        if data is None and engine in {"qwen3", "qwen3_design"}:
-            try:
-                data = self._tts_worker.synthesize(
-                    prepared, "", profile, engine="qwen3",
-                    speaker=str(voice_preset.get("speaker") or self.settings.expressive_tts_speaker),
-                    model_name=self.settings.expressive_tts_model,
-                    instruction=self._emotion_instruction(selected_mode),
-                    timeout=45,
-                )
-                self._voice_runtime["last_tts_engine"] = "qwen3"
-            except (TTSWorkerError, VoiceError) as exc:
-                errors.append(f"Qwen3-TTS CustomVoice: {exc}")
-
-        # SAPI is opt-in only. Never silently replace the selected EIRVEN voice with the
-        # Windows narrator.
-        if data is None and engine == "sapi" and __import__("os").name == "nt":
-            try:
-                data = self._tts_worker.synthesize(prepared, "", profile, engine="sapi", timeout=15)
-                self._voice_runtime["last_tts_engine"] = "sapi"
-            except (TTSWorkerError, VoiceError, OSError) as exc:
-                errors.append(f"Windows SAPI: {exc}")
-
-        if data is None:
-            raise VoiceError("Локальный голос недоступен: " + " | ".join(errors[-1:]))
-        return self._store_tts_audio(data, output, cache_path, float(profile["volume"]))
+        if locked_engine != "silero":
+            raise VoiceError("Локальный голос Бая не загрузился; другой голос автоматически не включаю")
+        locked_model = str(self._voice_runtime.get("locked_tts_model") or "")
+        locked_speaker = str(self._voice_runtime.get("locked_tts_speaker") or "")
+        if locked_speaker != "baya":
+            raise VoiceError("Нарушена фиксация голоса: разрешена только Бая")
+        model_path = str(self._voice_runtime.get("locked_tts_model") or self.settings.silero_model)
+        self._synthesis_active.set()
+        try:
+            data = self._tts_worker.synthesize(
+                prepared, model_path, profile, engine="silero", speaker="baya", timeout=15.0,
+            )
+        except (TTSWorkerError, OSError) as exc:
+            raise VoiceError(f"Голос Бая временно недоступен: {exc}") from exc
+        finally:
+            self._synthesis_active.clear()
+        # Utterance WAVs are intentionally fresh.  Reusing a cached greeting made every
+        # delivery identical and could preserve stale prosody after an emotion change.
+        # Only the neural model weights remain resident in the isolated worker.
+        self._voice_runtime["last_tts_engine"] = "silero:baya:fresh"
+        return self._store_tts_audio(data or b"", output, float(profile["volume"]))

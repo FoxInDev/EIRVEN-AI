@@ -1,3 +1,8 @@
+# EIRVEN AI — 2.4.0
+# Copyright (c) 2026 Даниил Павлов. Все права защищены. / All rights reserved.
+# Лицензия: EIRVEN Non-Commercial License — см. файл LICENSE.
+# Обязательна видимая подпись «На базе Эрви». Скрывать её запрещено (см. LICENSE).
+# EIRVEN-LICENSE-HEADER
 from __future__ import annotations
 
 import re
@@ -28,13 +33,14 @@ _ACTIONS: dict[str, tuple[str, ...]] = {
     "click": ("нажми", "нажать", "кликни", "кликнуть", "ткни", "тапни"),
     "move": ("перемести", "переместить", "передвинь", "передвинуть", "сдвинь", "сдвинуть", "перенеси", "перенести"),
     "remember": ("запомни", "запомнить", "сохрани", "сохранить"),
+    "modify": ("измени", "изменить", "замени", "заменить", "поменяй", "поменять", "допиши", "дописать", "дополни", "дополнить"),
     "ask": ("попроси", "попросить", "скажи", "скажи-ка"),
 }
 
 _FILLERS = {
     "пожалуйста", "плис", "плиз", "мне", "для", "меня", "прям", "сейчас", "давай", "ну", "ка", "же",
     "приложение", "приложуху", "программу", "можешь", "можно", "бы", "быстро",
-    "умничка", "умница", "так", "слушай", "эй", "короче", "вообще", "ладно", "окей", "ок", "эрви", "эйрвен", "эрвен",
+    "умничка", "умница", "так", "слушай", "эй", "короче", "вообще", "ладно", "окей", "ок", "эрви", "эрви", "эрвен",
 }
 
 
@@ -62,6 +68,37 @@ def _action_for_token(token: str) -> tuple[str, float] | None:
     return best
 
 
+def is_capability_question(text: str) -> bool:
+    """Return True for questions *about* an ability, not requests to use it.
+
+    Russian word order is flexible: ``Код умеешь писать?`` is the same
+    capability question as ``Умеешь писать код?``.  The fuzzy verb parser used to
+    match the infinitive ``писать`` to the imperative ``написать`` and opened a
+    messenger clarification instead of answering.  Keep the guard semantic and
+    independent of word order so voice paraphrases behave the same way.
+    """
+    clean = _norm(text)
+    if not clean:
+        return False
+    direct_ability = bool(re.search(
+        r"\b(?:ты\s+)?(?:умеешь|способна|способен|знаешь\s+как)\b",
+        clean,
+    ))
+    # ``можешь`` most often introduces a polite request (``можешь проверить
+    # почту``). Treat it as an ability question only when the utterance is about
+    # the assistant's general coding skill; real tasks must keep flowing to tools.
+    can_code = bool(
+        re.search(r"\bможешь\b", clean)
+        and re.search(r"\b(?:код\w*|программир\w*|разработ\w*)\b", clean)
+    )
+    ability = direct_ability or can_code
+    explicit_request = bool(re.match(
+        r"^(?:пожалуйста\s+)?(?:напиши|сделай|создай|сгенерируй|отправь|открой|запусти)\b",
+        clean,
+    ))
+    return ability and not explicit_request
+
+
 def _clean_target(tokens: list[str]) -> str:
     out: list[str] = []
     for token in tokens:
@@ -85,6 +122,8 @@ def detect_commands(text: str) -> list[CommandIntent]:
     """
     clean = _norm(text)
     if not clean:
+        return []
+    if is_capability_question(text):
         return []
     tokens = clean.split()
     positions: list[tuple[int, str, float]] = []

@@ -1,3 +1,8 @@
+# EIRVEN AI — 2.4.0
+# Copyright (c) 2026 Даниил Павлов. Все права защищены. / All rights reserved.
+# Лицензия: EIRVEN Non-Commercial License — см. файл LICENSE.
+# Обязательна видимая подпись «На базе Эрви». Скрывать её запрещено (см. LICENSE).
+# EIRVEN-LICENSE-HEADER
 from __future__ import annotations
 
 import json
@@ -264,7 +269,7 @@ class ChatJobManager:
         assignment = ", ".join(f"{key}=?" for key, _ in pairs)
         with self.db.connect() as conn:
             conn.execute(
-                f"UPDATE chat_jobs SET {assignment} WHERE id=?",
+                f"UPDATE chat_jobs SET {assignment} WHERE id=? AND status IN ('queued','running')",
                 [value for _, value in pairs] + [job_id],
             )
 
@@ -286,9 +291,14 @@ class ChatJobManager:
         now = utc_now()
         with self.db.connect() as conn:
             row = conn.execute(
-                "SELECT conversation_id, assistant_message_id FROM chat_jobs WHERE id=?",
+                "SELECT conversation_id, assistant_message_id, status FROM chat_jobs WHERE id=?",
                 (job_id,),
             ).fetchone()
+            # Cancellation/supersession is terminal.  An old worker that returns a
+            # fraction of a second later must not resurrect the job as done or append
+            # its answer behind the newer user turn.
+            if not row or str(row["status"] or "") not in {"queued", "running"}:
+                return
             assistant_message_id = int(row["assistant_message_id"]) if row and row["assistant_message_id"] else None
             if status == "done" and answer and row and assistant_message_id is None:
                 metadata = {

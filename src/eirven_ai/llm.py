@@ -1,3 +1,8 @@
+# EIRVEN AI — 2.4.0
+# Copyright (c) 2026 Даниил Павлов. Все права защищены. / All rights reserved.
+# Лицензия: EIRVEN Non-Commercial License — см. файл LICENSE.
+# Обязательна видимая подпись «На базе Эрви». Скрывать её запрещено (см. LICENSE).
+# EIRVEN-LICENSE-HEADER
 from __future__ import annotations
 
 import json
@@ -18,6 +23,30 @@ import httpx
 
 from .config import Settings
 from .llm_arbiter import CompositeStop, GLOBAL_LLM_ARBITER
+
+
+def _ctx_tier(settings: Any, requested: Any) -> int:
+    """Размер контекста для Ollama — только из двух ступеней.
+
+    В Ollama размер контекста задаётся при ЗАГРУЗКЕ модели. Если два запроса к
+    одной модели приходят с разным num_ctx, Ollama выгружает её и загружает
+    заново — по несколько секунд. А вызовы Эрви просили около пятнадцати разных
+    размеров, от 512 до 8192: управляющее решение — 3072, ответ в разговоре —
+    4096, прогрев — 768. На каждое «как дела» модель перезагружалась дважды,
+    отсюда 10–20 секунд на простой ответ.
+
+    Теперь любой размер приводится к одной из двух ступеней: обычной (разговор,
+    команды, решение) и большой (длинные задачи). На обычном пути все вызовы
+    попадают в одну ступень — и модель не перезагружается. Считает модель при
+    этом столько же: время разбора зависит от длины текста, а не от размера окна.
+    """
+    small = max(1024, int(getattr(settings, "chat_num_ctx", 4096) or 4096))
+    large = max(small, int(getattr(settings, "task_num_ctx", 8192) or 8192))
+    try:
+        value = int(requested or small)
+    except (TypeError, ValueError):
+        value = small
+    return small if value <= small else large
 
 
 class LLMError(RuntimeError):
@@ -43,6 +72,95 @@ def _http_error_detail(response: httpx.Response, limit: int = 1000) -> str:
 
 class LLMPreempted(LLMError):
     pass
+
+
+_OLLAMA_START_LOCK = threading.Lock()
+_OLLAMA_START_ATTEMPTED = False
+
+
+def _local_ollama_url(url: str) -> bool:
+    value = str(url or "").casefold()
+    return value.startswith("http://127.0.0.1:11434") or value.startswith("http://localhost:11434")
+
+
+def _training_coexist() -> bool:
+    return str(os.getenv("EIRVEN_TRAINING_COEXIST", "0") or "0").strip().casefold() in {"1", "true", "yes", "on"}
+
+
+def _runtime_num_gpu(value: int | None) -> int | None:
+    # Owner QLoRA owns the GPU. Runtime stays usable through CPU Ollama without
+    # changing, pausing or signalling the training process.
+    return 0 if _training_coexist() else value
+
+
+def _apply_training_safe_options(options: dict[str, Any]) -> None:
+    if _training_coexist():
+        # Two CPU threads keep interactive diagnostics usable while leaving most host
+        # CPU time to the WSL owner-training process. No training file/process is touched.
+        options["num_gpu"] = 0
+        options["num_thread"] = 2
+
+
+def _ollama_binary() -> str:
+    found = shutil.which("ollama") or shutil.which("ollama.exe")
+    if found:
+        return found
+    local = os.getenv("LOCALAPPDATA", "").strip()
+    if local:
+        for path in (Path(local) / "Programs" / "Ollama" / "ollama.exe", Path(local) / "Ollama" / "ollama.exe"):
+            if path.is_file():
+                return str(path)
+    return ""
+
+
+def _ensure_local_ollama_server(settings: Settings, timeout: float = 16.0) -> bool:
+    """Idempotently start an installed local Ollama service. Never downloads models."""
+    global _OLLAMA_START_ATTEMPTED
+    if not _local_ollama_url(settings.ollama_url):
+        return True
+    try:
+        if httpx.get(f"{settings.ollama_url}/api/version", timeout=1.0, trust_env=False).status_code == 200:
+            return True
+    except Exception:
+        pass
+    with _OLLAMA_START_LOCK:
+        try:
+            if httpx.get(f"{settings.ollama_url}/api/version", timeout=.8, trust_env=False).status_code == 200:
+                return True
+        except Exception:
+            pass
+        # One server process per EIRVEN process. Repeated chat requests must not spawn a storm.
+        if not _OLLAMA_START_ATTEMPTED:
+            _OLLAMA_START_ATTEMPTED = True
+            executable = _ollama_binary()
+            if not executable:
+                return False
+            try:
+                logs = settings.root_dir / "logs"
+                logs.mkdir(exist_ok=True)
+                log = (logs / "ollama-launch.log").open("a", encoding="utf-8")
+                flags = 0
+                if os.name == "nt":
+                    # Без DETACHED_PROCESS: с ним CREATE_NO_WINDOW игнорируется, у процесса нет консоли вовсе,
+                    # и КАЖДАЯ консольная программа, которую он запускает (у Ollama — проверка видеокарт и
+                    # процессы моделей), открывала своё видимое окно: 20–30 окон cmd при запуске.
+                    # С одним CREATE_NO_WINDOW консоль скрытая, и потомки наследуют её — окон нет.
+                    flags = getattr(subprocess, "CREATE_NO_WINDOW", 0) | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+                subprocess.Popen(
+                    [executable, "serve"], cwd=str(settings.root_dir), stdin=subprocess.DEVNULL,
+                    stdout=log, stderr=log, creationflags=flags,
+                )
+            except Exception:
+                return False
+        deadline = time.monotonic() + max(2.0, float(timeout))
+        while time.monotonic() < deadline:
+            try:
+                if httpx.get(f"{settings.ollama_url}/api/version", timeout=.7, trust_env=False).status_code == 200:
+                    return True
+            except Exception:
+                pass
+            time.sleep(.25)
+    return False
 
 
 def _request_timeout(timeout_seconds: float | None) -> httpx.Timeout | None:
@@ -98,6 +216,9 @@ class GenerationMetrics:
     generation_seconds: float = 0.0
     thinking_chars: int = 0
     stopped: bool = False
+    finish_reason: str = ""
+    requested_tokens: int = 0
+    hit_token_limit: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -109,6 +230,9 @@ class OllamaBackend:
         self.base_url = settings.ollama_url
         self.default_model = settings.model
         self._local = threading.local()
+        # Server-side safety net for archives applied over an older frozen launcher.
+        # This is intentionally model-download-free; SETUP EDUCATION MODEL.cmd handles pulls once.
+        _ensure_local_ollama_server(settings)
 
     @property
     def last_metrics(self) -> GenerationMetrics | None:
@@ -151,6 +275,7 @@ class OllamaBackend:
             return []
 
     def warm(self, model: str, keep_alive: str | None = None, num_gpu: int | None = None) -> None:
+        num_gpu = _runtime_num_gpu(num_gpu)
         payload = {
             "model": model,
             "messages": [],
@@ -159,6 +284,7 @@ class OllamaBackend:
         }
         if num_gpu is not None:
             payload["options"] = {"num_gpu": int(num_gpu)}
+        _apply_training_safe_options(payload.setdefault("options", {}))
         try:
             response = httpx.post(f"{self.base_url}/api/chat", json=payload, timeout=300, trust_env=False)
             response.raise_for_status()
@@ -184,9 +310,21 @@ class OllamaBackend:
         keep_alive: str | None = None,
         stop_event: threading.Event | None = None,
         timeout_seconds: float | None = None,
+        first_token_timeout_seconds: float | None = None,
+        inactivity_timeout_seconds: float | None = None,
         num_gpu: int | None = None,
     ) -> Generator[str, None, None]:
+        """Stream a local Ollama answer without a whole-response wall-clock deadline.
+
+        ``timeout_seconds`` remains a backwards-compatible bounded budget for internal
+        planner calls. Foreground chat supplies a generous cold-load/first-activity
+        timeout and a much shorter between-chunks inactivity timeout. Ollama's private
+        ``message.thinking`` is treated as progress for timeout purposes but is never
+        surfaced to the user; the UI receives only a high-level Thinking indicator.
+        """
         selected = model or self.default_model
+        requested_tokens = int(num_predict or self.settings.chat_num_predict)
+        num_gpu = _runtime_num_gpu(num_gpu)
         payload = {
             "model": selected,
             "messages": messages,
@@ -194,61 +332,132 @@ class OllamaBackend:
             "keep_alive": keep_alive or self.settings.keep_alive,
             "options": {
                 "temperature": temperature,
-                "num_ctx": num_ctx or self.settings.chat_num_ctx,
-                "num_predict": num_predict or self.settings.chat_num_predict,
+                "num_ctx": _ctx_tier(self.settings, num_ctx or self.settings.chat_num_ctx),
+                "num_predict": requested_tokens,
             },
         }
         if num_gpu is not None:
             payload["options"]["num_gpu"] = int(num_gpu)
-        has_images = any(bool(message.get("images")) for message in messages)
-        if not has_images:
-            payload["think"] = think
+        _apply_training_safe_options(payload["options"])
+        payload["think"] = bool(think)
+
+        legacy = float(timeout_seconds or 0.0)
+        first_budget = float(first_token_timeout_seconds or legacy or 75.0)
+        idle_budget = float(inactivity_timeout_seconds or legacy or 25.0)
+        first_budget = max(1.0, first_budget)
+        idle_budget = max(1.0, idle_budget)
+        connect_budget = min(5.0, first_budget)
+
         started = time.perf_counter()
         first_token_at: float | None = None
+        last_activity_at = started
+        model_activity = False
         thinking_chars = 0
         final_event: dict[str, Any] = {}
         stopped = False
+        events: queue.Queue[tuple[str, Any]] = queue.Queue()
+        cancel = threading.Event()
+
+        def producer() -> None:
+            timeout = httpx.Timeout(
+                max(first_budget, idle_budget, 30.0),
+                connect=connect_budget,
+                read=max(first_budget, idle_budget, 30.0),
+                write=min(10.0, first_budget),
+                pool=min(5.0, first_budget),
+            )
+            try:
+                with httpx.stream(
+                    "POST", f"{self.base_url}/api/chat", json=payload,
+                    timeout=timeout, trust_env=False,
+                ) as response:
+                    try:
+                        response.raise_for_status()
+                    except httpx.HTTPStatusError:
+                        events.put(("llm_error", f"Ollama вернула ошибку {response.status_code}: {_http_error_detail(response)}"))
+                        return
+                    events.put(("connected", None))
+                    for line in response.iter_lines():
+                        if cancel.is_set():
+                            break
+                        if not line:
+                            continue
+                        try:
+                            event = json.loads(line)
+                        except Exception as exc:
+                            events.put(("llm_error", f"Ollama вернула повреждённый поток: {exc}"))
+                            return
+                        events.put(("event", event))
+                        if bool(event.get("done")):
+                            break
+            except httpx.ConnectError:
+                events.put(("llm_error", "Не удалось подключиться к Ollama. Запустите Ollama или откройте Настройки → Модели."))
+            except httpx.TimeoutException:
+                events.put(("transport_timeout", None))
+            except Exception as exc:
+                events.put(("llm_error", f"Ошибка Ollama: {exc}"))
+            finally:
+                events.put(("producer_done", None))
+
+        worker = threading.Thread(target=producer, name=f"eirven-ollama-{selected}", daemon=True)
+        worker.start()
         try:
-            request_timeout = _request_timeout(timeout_seconds)
-            with httpx.stream(
-                "POST",
-                f"{self.base_url}/api/chat",
-                json=payload,
-                timeout=request_timeout,
-                trust_env=False,
-            ) as response:
-                response.raise_for_status()
-                for line in response.iter_lines():
-                    if timeout_seconds and time.perf_counter() - started > float(timeout_seconds):
-                        raise LLMError(f"Локальная модель не закончила ответ за {int(float(timeout_seconds))} сек.")
-                    if stop_event and stop_event.is_set():
-                        stopped = True
-                        break
-                    if not line:
-                        continue
-                    event = json.loads(line)
-                    final_event = event
-                    message = event.get("message", {})
-                    thinking_chars += len(message.get("thinking", "") or "")
-                    content = message.get("content", "") or ""
-                    if content:
-                        if first_token_at is None:
-                            first_token_at = time.perf_counter()
-                        yield content
-        except httpx.ConnectError as exc:
-            raise LLMError(
-                "Не удалось подключиться к Ollama. Запустите Ollama и скачайте модель."
-            ) from exc
-        except httpx.TimeoutException as exc:
-            raise LLMError(f"Локальная модель не начала/продолжила ответ за {int(timeout_seconds or 0)} сек.") from exc
-        except httpx.HTTPStatusError as exc:
-            detail = _http_error_detail(exc.response)
-            raise LLMError(f"Ollama вернула ошибку {exc.response.status_code}: {detail}") from exc
-        except Exception as exc:
-            raise LLMError(f"Ошибка Ollama: {exc}") from exc
+            while True:
+                if stop_event and stop_event.is_set():
+                    stopped = True
+                    cancel.set()
+                    break
+                now = time.perf_counter()
+                if model_activity:
+                    remaining = idle_budget - (now - last_activity_at)
+                    timeout_label = "продолжила"
+                    budget_label = idle_budget
+                else:
+                    remaining = first_budget - (now - started)
+                    timeout_label = "начала"
+                    budget_label = first_budget
+                if remaining <= 0:
+                    cancel.set()
+                    raise LLMError(
+                        f"Локальная модель не {timeout_label} ответ за {int(budget_label)} сек. "
+                        "Если это первый запрос после запуска, Ollama могла ещё загружать модель."
+                    )
+                try:
+                    kind, value = events.get(timeout=min(0.35, max(0.05, remaining)))
+                except queue.Empty:
+                    continue
+                if kind == "connected":
+                    continue
+                if kind == "llm_error":
+                    raise LLMError(str(value))
+                if kind == "transport_timeout":
+                    raise LLMError(
+                        f"Ollama не передавала данные дольше {int(first_budget if not model_activity else idle_budget)} сек."
+                    )
+                if kind == "producer_done":
+                    break
+                if kind != "event":
+                    continue
+                event = value
+                final_event = event
+                last_activity_at = time.perf_counter()
+                message = event.get("message", {}) or {}
+                hidden = message.get("thinking", "") or ""
+                content = message.get("content", "") or ""
+                if hidden or content:
+                    model_activity = True
+                thinking_chars += len(hidden)
+                if content:
+                    if first_token_at is None:
+                        first_token_at = time.perf_counter()
+                    yield content
+                if bool(event.get("done")):
+                    break
         finally:
+            cancel.set()
             ended = time.perf_counter()
             eval_count = int(final_event.get("eval_count") or 0)
+            finish_reason = str(final_event.get("done_reason") or "")
             eval_duration = float(final_event.get("eval_duration") or 0) / 1_000_000_000
             self._local.last_metrics = GenerationMetrics(
                 model=selected,
@@ -262,6 +471,14 @@ class OllamaBackend:
                 generation_seconds=round(eval_duration, 3),
                 thinking_chars=thinking_chars,
                 stopped=stopped,
+                finish_reason=finish_reason,
+                requested_tokens=requested_tokens,
+                hit_token_limit=bool(
+                    not stopped and (
+                        finish_reason.casefold() in {"length", "max_tokens", "token_limit"}
+                        or (requested_tokens > 0 and eval_count >= requested_tokens)
+                    )
+                ),
             )
 
     def chat_once(
@@ -280,6 +497,8 @@ class OllamaBackend:
         num_gpu: int | None = None,
     ) -> dict[str, Any]:
         selected = model or self.default_model
+        requested_tokens = int(num_predict or self.settings.task_num_predict)
+        num_gpu = _runtime_num_gpu(num_gpu)
         payload: dict[str, Any] = {
             "model": selected,
             "messages": messages,
@@ -287,15 +506,14 @@ class OllamaBackend:
             "keep_alive": keep_alive or self.settings.keep_alive,
             "options": {
                 "temperature": temperature,
-                "num_ctx": num_ctx or self.settings.task_num_ctx,
-                "num_predict": num_predict or self.settings.task_num_predict,
+                "num_ctx": _ctx_tier(self.settings, num_ctx or self.settings.task_num_ctx),
+                "num_predict": requested_tokens,
             },
         }
         if num_gpu is not None:
             payload["options"]["num_gpu"] = int(num_gpu)
-        has_images = any(bool(message.get("images")) for message in messages)
-        if not has_images:
-            payload["think"] = think
+        _apply_training_safe_options(payload["options"])
+        payload["think"] = bool(think)
         if tools:
             payload["tools"] = tools
         if response_format:
@@ -308,6 +526,7 @@ class OllamaBackend:
             body = response.json()
             message = body.get("message", {})
             eval_count = int(body.get("eval_count") or 0)
+            finish_reason = str(body.get("done_reason") or "")
             eval_duration = float(body.get("eval_duration") or 0) / 1_000_000_000
             self._local.last_metrics = GenerationMetrics(
                 model=selected,
@@ -320,6 +539,12 @@ class OllamaBackend:
                 prompt_eval_seconds=round(float(body.get("prompt_eval_duration") or 0) / 1_000_000_000, 3),
                 generation_seconds=round(eval_duration, 3),
                 thinking_chars=len(message.get("thinking", "") or ""),
+                finish_reason=finish_reason,
+                requested_tokens=requested_tokens,
+                hit_token_limit=bool(
+                    finish_reason.casefold() in {"length", "max_tokens", "token_limit"}
+                    or (requested_tokens > 0 and eval_count >= requested_tokens)
+                ),
             )
             return message
         except httpx.ConnectError as exc:
@@ -347,289 +572,6 @@ class OllamaBackend:
             return list(embeddings[0]) if embeddings else []
         except Exception as exc:
             raise LLMError(f"Не удалось получить embedding: {exc}") from exc
-
-
-class ClaudeCodeLocalBackend(OllamaBackend):
-    """Use the official Claude Code harness with Ollama's local Anthropic endpoint.
-
-    Claude Code is an agent/CLI, not a downloadable copy of Anthropic's proprietary
-    Claude weights. The selected ``--model`` is therefore an Ollama model chosen by the
-    hardware profile. Structured EIRVEN tool/JSON calls intentionally keep using the
-    inherited native Ollama API; conversational streaming uses this harness first.
-    """
-
-    def __init__(self, settings: Settings):
-        super().__init__(settings)
-        self.command = str(os.getenv("EIRVEN_CLAUDE_CODE_COMMAND", "claude") or "claude").strip()
-        self.fallback_enabled = str(os.getenv("EIRVEN_CLAUDE_CODE_FALLBACK", "1")).strip().casefold() not in {"0", "false", "no", "off"}
-        self.claude_fast_model = str(os.getenv("EIRVEN_CLAUDE_CODE_FAST_MODEL", "") or "").strip()
-        self.claude_main_model = str(os.getenv("EIRVEN_CLAUDE_CODE_MODEL", "") or "").strip()
-        self.harness_mode = str(os.getenv("EIRVEN_CLAUDE_CODE_MODE", "agentic") or "agentic").strip().casefold()
-
-    def _claude_model(self, requested: str | None = None) -> str:
-        """Map EIRVEN's fast/main lanes to context-sized Ollama aliases."""
-        if requested and requested == self.settings.fast_model and self.claude_fast_model:
-            return self.claude_fast_model
-        if requested and requested == self.settings.model and self.claude_main_model:
-            return self.claude_main_model
-        return requested or self.claude_main_model or self.default_model
-
-    def _command_path(self) -> str:
-        found = shutil.which(self.command) or shutil.which("claude.cmd") or shutil.which("claude.exe")
-        if found:
-            return found
-        candidates: list[Path] = []
-        home = Path.home()
-        candidates.extend([home / ".local" / "bin" / "claude.exe", home / ".local" / "bin" / "claude"])
-        appdata = os.getenv("APPDATA", "").strip()
-        if appdata:
-            candidates.append(Path(appdata) / "npm" / "claude.cmd")
-        local = os.getenv("LOCALAPPDATA", "").strip()
-        if local:
-            candidates.extend([Path(local) / "Programs" / "claude" / "claude.exe", Path(local) / "claude" / "claude.exe"])
-        return next((str(path) for path in candidates if path.is_file()), "")
-
-    def health(self) -> dict[str, Any]:
-        ollama = super().health()
-        command = self._command_path()
-        version = ""
-        if command:
-            try:
-                completed = subprocess.run(
-                    [command, "--version"], capture_output=True, text=True, encoding="utf-8",
-                    errors="replace", timeout=5, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-                )
-                version = (completed.stdout or completed.stderr or "").strip()[:200]
-            except Exception:
-                version = ""
-        ok = bool(ollama.get("ok") and command)
-        result = {
-            **ollama,
-            "ok": ok,
-            "backend": "claude_code_local",
-            "claude_code": bool(command),
-            "claude_code_path": command,
-            "claude_code_version": version,
-            "local_model": self.claude_main_model or self.default_model,
-            "fast_local_model": self.claude_fast_model or self.settings.fast_model,
-            "harness_mode": self.harness_mode,
-            "cloud_api": False,
-        }
-        if not command:
-            result["error"] = "Claude Code CLI не установлен; доступен резервный прямой Ollama-контур"
-        return result
-
-    @staticmethod
-    def _message_text(content: Any) -> str:
-        if isinstance(content, str):
-            return content
-        if isinstance(content, list):
-            parts: list[str] = []
-            for item in content:
-                if isinstance(item, dict) and item.get("type") == "text":
-                    parts.append(str(item.get("text") or ""))
-                elif isinstance(item, str):
-                    parts.append(item)
-            return "\n".join(part for part in parts if part)
-        return str(content or "")
-
-    def _claude_prompt(self, messages: list[dict[str, Any]]) -> tuple[str, str]:
-        systems: list[str] = []
-        turns: list[str] = []
-        for message in messages:
-            role = str(message.get("role") or "user").casefold()
-            text = self._message_text(message.get("content"))
-            if not text:
-                continue
-            if role == "system":
-                systems.append(text)
-            else:
-                label = "Владелец" if role == "user" else "Эрви"
-                turns.append(f"{label}: {text}")
-        system = "\n\n".join(systems).strip() or "Ты локальный ассистент EIRVEN. Отвечай на языке владельца."
-        prompt = (
-            "Продолжи этот диалог одним ответом Эрви. Не повторяй метки ролей и не описывай внутренний процесс.\n\n"
-            + "\n\n".join(turns)
-            + "\n\nЭрви:"
-        )
-        return system, prompt
-
-    def stream_chat(
-        self,
-        messages: list[dict[str, Any]],
-        model: str | None = None,
-        temperature: float = 0.7,
-        *,
-        think: bool = False,
-        num_ctx: int | None = None,
-        num_predict: int | None = None,
-        keep_alive: str | None = None,
-        stop_event: threading.Event | None = None,
-        timeout_seconds: float | None = None,
-        num_gpu: int | None = None,
-    ) -> Generator[str, None, None]:
-        requested = model or self.default_model
-        use_harness = self.harness_mode == "all" or (
-            self.harness_mode == "agentic"
-            and (bool(think) or requested in {self.settings.code_model, self.settings.deep_model})
-        )
-        # Claude Code is a capable agent shell but starting a fresh CLI process for a
-        # greeting adds latency without changing the local weights. Real-time dialogue
-        # therefore talks to the exact same Ollama model directly; code/deep lanes retain
-        # the Claude Code harness and its project-oriented context handling.
-        if not use_harness:
-            yield from super().stream_chat(
-                messages, model, temperature, think=think, num_ctx=num_ctx,
-                num_predict=num_predict, keep_alive=keep_alive, stop_event=stop_event,
-                timeout_seconds=timeout_seconds, num_gpu=num_gpu,
-            )
-            return
-        command = self._command_path()
-        if not command:
-            if self.fallback_enabled:
-                yield from super().stream_chat(
-                    messages, model, temperature, think=think, num_ctx=num_ctx,
-                    num_predict=num_predict, keep_alive=keep_alive, stop_event=stop_event,
-                    timeout_seconds=timeout_seconds, num_gpu=num_gpu,
-                )
-                return
-            raise LLMError("Claude Code CLI не найден")
-
-        selected = self._claude_model(model)
-        system, prompt = self._claude_prompt(messages)
-        started = time.perf_counter()
-        first_token_at: float | None = None
-        generated_chars = 0
-        prompt_tokens = 0
-        output_tokens = 0
-        stopped = False
-        yielded = False
-        system_path = ""
-        process: subprocess.Popen[str] | None = None
-        errors: list[str] = []
-        try:
-            with tempfile.NamedTemporaryFile("w", encoding="utf-8", suffix=".txt", prefix="eirven-claude-system-", delete=False) as handle:
-                handle.write(system)
-                system_path = handle.name
-            args = [
-                command, "-p", "--input-format", "text", "--output-format", "stream-json",
-                "--verbose", "--include-partial-messages", "--model", selected,
-                "--system-prompt-file", system_path, "--tools", "", "--strict-mcp-config",
-                "--no-session-persistence", "--bare",
-            ]
-            env = os.environ.copy()
-            env.update({
-                "ANTHROPIC_AUTH_TOKEN": "ollama",
-                "ANTHROPIC_API_KEY": "",
-                "ANTHROPIC_BASE_URL": self.base_url,
-                "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
-                "NO_PROXY": "127.0.0.1,localhost",
-                "no_proxy": "127.0.0.1,localhost",
-            })
-            process = subprocess.Popen(
-                args, cwd=str(self.settings.root_dir), env=env, stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8",
-                errors="replace", bufsize=1, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-            )
-            if process.stdin is not None:
-                process.stdin.write(prompt)
-                process.stdin.close()
-
-            events: queue.Queue[tuple[str, str]] = queue.Queue()
-
-            def _read_stdout() -> None:
-                try:
-                    if process is not None and process.stdout is not None:
-                        for line in process.stdout:
-                            events.put(("stdout", line))
-                finally:
-                    events.put(("stdout_done", ""))
-
-            def _read_stderr() -> None:
-                try:
-                    if process is not None and process.stderr is not None:
-                        for line in process.stderr:
-                            errors.append(line)
-                finally:
-                    events.put(("stderr_done", ""))
-
-            threading.Thread(target=_read_stdout, daemon=True, name="claude-code-stdout").start()
-            threading.Thread(target=_read_stderr, daemon=True, name="claude-code-stderr").start()
-            stdout_done = False
-            final_text = ""
-            while not stdout_done or (process.poll() is None):
-                if stop_event and stop_event.is_set():
-                    stopped = True
-                    process.terminate()
-                    break
-                if timeout_seconds and time.perf_counter() - started > float(timeout_seconds):
-                    process.terminate()
-                    raise LLMError(f"Claude Code Local не закончил ответ за {int(float(timeout_seconds))} сек.")
-                try:
-                    kind, line = events.get(timeout=0.05)
-                except queue.Empty:
-                    continue
-                if kind == "stdout_done":
-                    stdout_done = True
-                    continue
-                if kind != "stdout" or not line.strip():
-                    continue
-                try:
-                    event = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                event_type = str(event.get("type") or "")
-                if event_type == "stream_event":
-                    inner = event.get("event") or {}
-                    delta = inner.get("delta") or {}
-                    if str(delta.get("type") or "") == "text_delta":
-                        content = str(delta.get("text") or "")
-                        if content:
-                            yielded = True
-                            generated_chars += len(content)
-                            first_token_at = first_token_at or time.perf_counter()
-                            yield content
-                elif event_type == "result":
-                    final_text = str(event.get("result") or "")
-                    usage = event.get("usage") or {}
-                    prompt_tokens = int(usage.get("input_tokens") or 0)
-                    output_tokens = int(usage.get("output_tokens") or 0)
-            return_code = process.wait(timeout=3) if process.poll() is None else int(process.returncode or 0)
-            if return_code != 0 and not stopped:
-                detail = "".join(errors).strip()[-1600:] or f"код {return_code}"
-                raise LLMError(f"Claude Code Local завершился с ошибкой: {detail}")
-            if final_text and not yielded and not stopped:
-                yielded = True
-                generated_chars += len(final_text)
-                first_token_at = first_token_at or time.perf_counter()
-                yield final_text
-        except Exception as exc:
-            if process is not None and process.poll() is None:
-                try: process.terminate()
-                except Exception: pass
-            if self.fallback_enabled and not yielded and not (stop_event and stop_event.is_set()):
-                yield from super().stream_chat(
-                    messages, model, temperature, think=think, num_ctx=num_ctx,
-                    num_predict=num_predict, keep_alive=keep_alive, stop_event=stop_event,
-                    timeout_seconds=timeout_seconds, num_gpu=num_gpu,
-                )
-                return
-            if isinstance(exc, LLMError):
-                raise
-            raise LLMError(f"Ошибка Claude Code Local: {exc}") from exc
-        finally:
-            if system_path:
-                try: Path(system_path).unlink(missing_ok=True)
-                except Exception: pass
-            if not (self.fallback_enabled and not yielded and self.last_metrics is not None):
-                ended = time.perf_counter()
-                elapsed = max(0.001, ended - started)
-                self._local.last_metrics = GenerationMetrics(
-                    model=f"claude-code-local/{selected}", total_seconds=round(elapsed, 3),
-                    prompt_tokens=prompt_tokens, generated_tokens=output_tokens or max(1, generated_chars // 4),
-                    tokens_per_second=round((output_tokens or max(1, generated_chars // 4)) / elapsed, 2),
-                    first_token_seconds=round((first_token_at or ended) - started, 3), stopped=stopped,
-                )
 
 
 class LlamaCppBackend:
@@ -708,16 +650,20 @@ class LlamaCppBackend:
         started = time.perf_counter()
         first: float | None = None
         generated = 0
+        requested_tokens = int(num_predict or self.settings.chat_num_predict)
+        finish_reason = ""
         stream = llama.create_chat_completion(
             messages=messages,
             temperature=temperature,
-            max_tokens=num_predict or self.settings.chat_num_predict,
+            max_tokens=requested_tokens,
             stream=True,
         )
         for event in stream:
             if stop_event and stop_event.is_set():
                 break
-            delta = event.get("choices", [{}])[0].get("delta", {})
+            choice = event.get("choices", [{}])[0]
+            delta = choice.get("delta", {})
+            finish_reason = str(choice.get("finish_reason") or finish_reason)
             content = delta.get("content", "")
             if content:
                 first = first or time.perf_counter()
@@ -730,6 +676,12 @@ class LlamaCppBackend:
             first_token_seconds=round((first or time.perf_counter()) - started, 3),
             generated_tokens=generated,
             stopped=bool(stop_event and stop_event.is_set()),
+            finish_reason=finish_reason,
+            requested_tokens=requested_tokens,
+            hit_token_limit=bool(
+                not (stop_event and stop_event.is_set())
+                and finish_reason.casefold() in {"length", "max_tokens", "token_limit"}
+            ),
         )
 
     def chat_once(
@@ -777,8 +729,6 @@ class ModelGateway:
         self.settings = settings
         if settings.llm_backend == "llama_cpp":
             self.backend: OllamaBackend | LlamaCppBackend = LlamaCppBackend(settings)
-        elif settings.llm_backend in {"claude_code", "claude_code_local", "claude-local"}:
-            self.backend = ClaudeCodeLocalBackend(settings)
         else:
             self.backend = OllamaBackend(settings)
         self._context = threading.local()
@@ -870,9 +820,10 @@ class ModelGateway:
         priority = kwargs.pop("priority", self._priority())
         external = kwargs.pop("cancel_event", None) or self._cancel_event()
         timeout_seconds = float(kwargs.pop("timeout_seconds", 0) or 0)
-        # Foreground calls keep the existing fast non-streaming path. Background
-        # calls use a cancellable stream on Ollama so foreground chat can pre-empt.
-        if priority != "background" or not isinstance(self.backend, OllamaBackend):
+        # Every Ollama call is streamed internally, including structured/tool turns.
+        # This gives the arbiter and the scoped stop token a chance to close an obsolete
+        # foreground request instead of making the next voice turn wait 30–90 seconds.
+        if not isinstance(self.backend, OllamaBackend):
             with GLOBAL_LLM_ARBITER.acquire(priority):
                 return self.backend.chat_once(
                     messages, model, temperature, tools, response_format,
@@ -882,7 +833,7 @@ class ModelGateway:
         while True:
             if external and external.is_set():
                 raise LLMError("Задача остановлена пользователем")
-            with GLOBAL_LLM_ARBITER.acquire("background") as lease:
+            with GLOBAL_LLM_ARBITER.acquire(priority) as lease:
                 selected = model or self.backend.default_model
                 payload: dict[str, Any] = {
                     "model": selected, "messages": messages, "stream": True,
@@ -890,7 +841,7 @@ class ModelGateway:
                     "keep_alive": kwargs.get("keep_alive") or self.settings.keep_alive,
                     "options": {
                         "temperature": temperature,
-                        "num_ctx": kwargs.get("num_ctx") or self.settings.task_num_ctx,
+                        "num_ctx": _ctx_tier(self.settings, kwargs.get("num_ctx") or self.settings.task_num_ctx),
                         "num_predict": kwargs.get("num_predict") or self.settings.task_num_predict,
                     },
                 }
@@ -923,9 +874,13 @@ class ModelGateway:
                             if msg.get("content"): content += str(msg.get("content"))
                             if msg.get("tool_calls"): final_message["tool_calls"] = msg.get("tool_calls")
                     if preempted:
-                        continue
+                        if priority == "background" and not (external and external.is_set()):
+                            continue
+                        raise LLMError("Ответ остановлен новой командой владельца")
                     final_message["content"] = content
                     eval_count = int(final_event.get("eval_count") or 0)
+                    requested_tokens = int(payload["options"].get("num_predict") or 0)
+                    finish_reason = str(final_event.get("done_reason") or "")
                     eval_duration = float(final_event.get("eval_duration") or 0) / 1_000_000_000
                     self.backend._local.last_metrics = GenerationMetrics(
                         model=selected, total_seconds=round(time.perf_counter()-started,3),
@@ -936,6 +891,12 @@ class ModelGateway:
                         prompt_eval_seconds=round(float(final_event.get("prompt_eval_duration") or 0)/1_000_000_000,3),
                         generation_seconds=round(eval_duration,3),
                         thinking_chars=len(str((final_event.get("message") or {}).get("thinking") or "")),
+                        finish_reason=finish_reason,
+                        requested_tokens=requested_tokens,
+                        hit_token_limit=bool(
+                            finish_reason.casefold() in {"length", "max_tokens", "token_limit"}
+                            or (requested_tokens > 0 and eval_count >= requested_tokens)
+                        ),
                     )
                     return final_message
                 except httpx.HTTPStatusError as exc:

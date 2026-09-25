@@ -1,3 +1,8 @@
+# EIRVEN AI — 2.4.0
+# Copyright (c) 2026 Даниил Павлов. Все права защищены. / All rights reserved.
+# Лицензия: EIRVEN Non-Commercial License — см. файл LICENSE.
+# Обязательна видимая подпись «На базе Эрви». Скрывать её запрещено (см. LICENSE).
+# EIRVEN-LICENSE-HEADER
 from __future__ import annotations
 
 import os
@@ -17,6 +22,7 @@ class ModeController:
         self.db = db
         self.applications = applications
         self.tools = tools
+        self.camera = camera
         self.runtime = None
         self._lock = threading.RLock()
 
@@ -45,10 +51,8 @@ class ModeController:
                     break
                 except Exception:
                     continue
-            # Developer 2.0: pause ambient/proactive distractions, keep the current
-            # workspace and logs one command away, and open work surfaces in the owner
-            # default browser only.
-            self.db.set_setting("neuro_music_suspended", True)
+            # Keep the current workspace and logs one command away, and open work
+            # surfaces in the owner's default browser only.
             self.db.set_setting("developer_mode_started_at", time.time())
             for url in ("https://cp.jino.ru/", "https://web.telegram.org/"):
                 try:
@@ -74,7 +78,6 @@ class ModeController:
     def developer_off(self) -> dict[str, Any]:
         with self._lock:
             self.db.set_setting("developer_mode", False)
-            self.db.set_setting("neuro_music_suspended", False)
             self._notifications(True)
             return {"enabled": False}
 
@@ -87,8 +90,20 @@ class ModeController:
 
     def handle(self, text: str) -> tuple[bool, str, dict[str, Any]]:
         normalized = " ".join(text.casefold().replace("ё", "е").split())
-        if re.search(r"\b(?:(?:включи|запусти|активируй|выключи|отключи|закрой)\s+(?:режим\s+)?камер\w*|камер\w*)\b", normalized):
-            return True, "Камерный режим удалён из этой сборки.", {"action": "camera_removed", "control_plane": True}
+        camera_command = re.search(
+            r"\b(?:включи|запусти|активируй|выключи|отключи|закрой)\s+(?:режим\s+)?камер\w*\b",
+            normalized,
+        )
+        if camera_command:
+            if self.camera is None:
+                return True, "Камерный режим недоступен в этой сборке.", {"action": "camera_unavailable", "control_plane": True}
+            if re.search(r"\b(?:выключи|отключи|закрой)\b", normalized):
+                result = self.camera.stop()
+                return True, "Камеру выключила. Кадры больше не читаю.", {"action": "camera_stop", "result": result, "control_plane": True}
+            result = self.camera.start()
+            if result.get("running"):
+                return True, "Камеру включила. Она работает только пока включён этот режим.", {"action": "camera_start", "result": result, "control_plane": True}
+            return True, "Не удалось включить камеру: " + str(result.get("error") or "устройство недоступно"), {"action": "camera_start_failed", "result": result, "control_plane": True}
         if re.search(r"\bвключи\s+режим\s+разработчик", normalized):
             result = self.developer_on()
             return True, "Режим разработчика включён: VS Code и рабочие вкладки открываю, уведомления отключаю.", {"action": "developer_mode_on", "result": result}

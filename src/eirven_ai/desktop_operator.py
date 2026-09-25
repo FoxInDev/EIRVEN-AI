@@ -1,3 +1,8 @@
+# EIRVEN AI — 2.4.0
+# Copyright (c) 2026 Даниил Павлов. Все права защищены. / All rights reserved.
+# Лицензия: EIRVEN Non-Commercial License — см. файл LICENSE.
+# Обязательна видимая подпись «На базе Эрви». Скрывать её запрещено (см. LICENSE).
+# EIRVEN-LICENSE-HEADER
 from __future__ import annotations
 
 import base64
@@ -34,6 +39,13 @@ class DesktopOperator:
         text = str(text or "").casefold().replace("ё", "е")
         text = re.sub(r"[^a-zа-я0-9]+", " ", text)
         return re.sub(r"\s+", " ", text).strip()
+
+    @staticmethod
+    def _coerce_window_id(value: Any) -> int:
+        try:
+            return int(float(str(value).strip()))
+        except (TypeError, ValueError, OverflowError):
+            return 0
 
     @staticmethod
     def _element_blob(element: dict[str, Any]) -> str:
@@ -538,7 +550,7 @@ class DesktopOperator:
         # Chromium/Telegram updates UI Automation a little after the DOM.  Poll the
         # already-grounded field before considering a paste retry; otherwise a valid
         # first paste can be duplicated while the accessibility tree is still stale.
-        evidence_deadline=time.monotonic()+(.85 if require_verified else .20)
+        evidence_deadline=time.monotonic()+(2.40 if require_verified else .30)
         while True:
             time.sleep(.10)
             field_evidence,visible_evidence,focused,send_ready=inspect_evidence()
@@ -546,18 +558,10 @@ class DesktopOperator:
             if verified or time.monotonic()>=evidence_deadline:
                 break
         paste_retry=False
-        if require_verified and not verified and clipboard_used:
-            # Ctrl+V can be swallowed by an overlapping web-composer layer.  Re-ground
-            # the caret at the left placeholder zone and replace once through the native
-            # Shift+Insert paste gesture. Ctrl+A makes the retry idempotent if the first
-            # paste actually landed but Chromium failed to expose its value through UIA.
-            self._click_input_rect(field)
-            self.tools.execute("hotkey",{"keys":["ctrl","a"]})
-            paste_retry=bool(self.tools.execute("hotkey",{"keys":["shift","insert"]}).get("ok"))
-            time.sleep(.18)
-            field_evidence,visible_evidence,focused,send_ready=inspect_evidence()
-            verified=bool(field_evidence or (focused and visible_evidence) or send_ready)
         clipboard_roundtrip=False
+        # Before retrying a paste, inspect the *actual focused control*. Chromium and
+        # Telegram Desktop can lag UIA by well over a second while the text is already
+        # present. A clipboard round-trip proves that state without risking a duplicate.
         if require_verified and not verified and typed:
             # Chromium often exposes a perfectly usable HTML input with an empty UIA
             # ValuePattern (and sometimes Focusable=false).  Verify the *actual focused
@@ -582,6 +586,21 @@ class DesktopOperator:
                 except Exception: pass
             except Exception:
                 clipboard_roundtrip=False
+        if require_verified and not verified and clipboard_used:
+            # One idempotent replacement retry is allowed only after the round-trip
+            # failed to prove that text is already in the composer. Re-ground first;
+            # never keep retrying in a loop on a stale accessibility tree.
+            self._click_input_rect(field)
+            self.tools.execute("hotkey",{"keys":["ctrl","a"]})
+            paste_retry=bool(self.tools.execute("hotkey",{"keys":["shift","insert"]}).get("ok"))
+            if paste_retry:
+                retry_deadline=time.monotonic()+1.8
+                while time.monotonic()<retry_deadline:
+                    time.sleep(.12)
+                    field_evidence,visible_evidence,focused,send_ready=inspect_evidence()
+                    verified=bool(field_evidence or (focused and visible_evidence) or send_ready)
+                    if verified:
+                        break
         if submit and (verified or not require_verified):
             self.tools.execute("press_key",{"key":"enter"})
         completed=bool(typed and (verified or not require_verified))
@@ -706,7 +725,8 @@ class DesktopOperator:
         """Look at the owner's current screen and click a requested control like a person.
 
         This is the recovery lane when Windows accessibility exposes too little of a web
-        app. It uses the tiny disposable multimodal model and normalized screen coords.
+        app. It uses the already resident adaptive multimodal model and normalized screen
+        coordinates, so recovery does not make the next conversation cold.
         """
         path,_ = self._screenshot_digest()
         if not path:
@@ -714,30 +734,27 @@ class DesktopOperator:
         try:
             image=self._vision_image_b64(path)
             installed={str(x).casefold():str(x) for x in self.gateway.installed_models()}
-            # Qwen 0.8B follows coordinate JSON better than tiny caption models. Use it
-            # only as a short last-resort grounder; never run the old 12–22 s CPU retry.
-            model=installed.get("qwen3.5:0.8b") or installed.get(str(self.services.settings.vision_model).casefold()) or self.services.settings.vision_model
-            # Free heavier resident models so 4-GB GPUs cannot OOM on a single screenshot.
-            for resident in list(installed.values()):
-                if str(resident).casefold()!=str(model).casefold() and any(k in str(resident).casefold() for k in ("gemma","qwen","gpt-oss","devstral")):
-                    try:self.gateway.unload(resident)
-                    except Exception:pass
+            configured=str(self.services.settings.vision_model)
+            model=(installed.get(configured.casefold()) or
+                   installed.get("qwen3.5:2b") or installed.get("qwen3-vl:2b") or configured)
             schema={"type":"object","properties":{"found":{"type":"boolean"},"x":{"type":"number"},"y":{"type":"number"},"label":{"type":"string"}},"required":["found","x","y","label"]}
             prompt=(
-                "Ты управляешь текущим экраном как пользователь. Найди ОДИН видимый интерактивный элемент для цели: " + goal +
+                "<|grounding|>Ты управляешь текущим экраном как пользователь. Найди ОДИН видимый интерактивный элемент для цели: " + goal +
                 ". Подходящие подписи: " + ", ".join(labels) +
                 ". Верни found=true и координаты центра x,y НОРМАЛИЗОВАННЫЕ от 0 до 1 относительно всего изображения. "
                 "Не придумывай невидимый элемент; если его нет — found=false."
             )
             choice={}
             try:
-                candidate=self.gateway.json([{ "role":"user","content":prompt,"images":[image]}],model=model,temperature=0.0,schema=schema,num_ctx=512,num_predict=64,keep_alive="0",timeout_seconds=min(4.0,max(1.5,timeout)))
+                candidate=self.gateway.json(
+                    [{"role":"user","content":prompt,"images":[image]}],
+                    model=model, temperature=0.0, schema=schema, num_ctx=512,
+                    num_predict=64, keep_alive=self.services.settings.keep_alive,
+                    timeout_seconds=min(4.0,max(1.5,timeout)),
+                )
                 if isinstance(candidate,dict): choice=candidate
             except Exception as exc:
                 self._trace("OPERATOR_VISUAL_ERROR",goal=goal,execution="oneshot",error=str(exc)[:900])
-            finally:
-                try:self.gateway.unload(model)
-                except Exception:pass
             if not isinstance(choice,dict) or not choice.get("found"):
                 self._trace("OPERATOR_VISUAL",goal=goal,found=False)
                 return False
@@ -764,26 +781,26 @@ class DesktopOperator:
         try:
             image = self._vision_image_b64(path)
             installed = {str(x).casefold(): str(x) for x in self.gateway.installed_models()}
-            model = installed.get("qwen3.5:0.8b") or installed.get(str(self.services.settings.vision_model).casefold()) or self.services.settings.vision_model
-            for resident in list(installed.values()):
-                low = str(resident).casefold()
-                if low != str(model).casefold() and any(k in low for k in ("gemma", "qwen", "gpt-oss", "devstral", "moondream")):
-                    try: self.gateway.unload(resident)
-                    except Exception: pass
+            configured = str(self.services.settings.vision_model)
+            model = (
+                installed.get(configured.casefold())
+                or installed.get("qwen3.5:2b")
+                or installed.get("qwen3-vl:2b")
+                or configured
+            )
             try:
                 choice = self.gateway.json(
                     [{"role": "user", "content": prompt, "images": [image]}],
                     model=model, temperature=0.0, schema=schema,
-                    num_ctx=512, num_predict=72, keep_alive="0", timeout_seconds=min(4.2,max(1.5,timeout)),
+                    num_ctx=512, num_predict=72,
+                    keep_alive=self.services.settings.keep_alive,
+                    timeout_seconds=min(4.2,max(1.5,timeout)),
                 )
                 if isinstance(choice,dict):
                     self._trace("OPERATOR_VISUAL_RESULT",execution="oneshot",goal=prompt[:160])
                     return dict(choice)
             except Exception as exc:
                 self._trace("OPERATOR_VISUAL_ERROR",execution="oneshot",goal=prompt[:180],error=str(exc)[:900])
-            finally:
-                try:self.gateway.unload(model)
-                except Exception:pass
             return {}
         except Exception as exc:
             self._trace("OPERATOR_VISUAL_ERROR", goal=prompt[:180], error=str(exc)[:900])
@@ -804,7 +821,7 @@ class DesktopOperator:
         """Bounded visible-screen operator.
 
         It behaves like a careful person on the current desktop: inspect -> one atomic
-        action -> inspect again. The tiny disposable VLM chooses only coordinates/action
+        action -> inspect again. The resident multimodal model chooses only coordinates/action
         type; it cannot spawn projects, open a hidden browser profile or loop forever.
         """
         try:
@@ -861,7 +878,7 @@ class DesktopOperator:
         return {"ok":verified,"verified":verified,"steps":history,"error":"Цель не подтверждена на экране" if not verified else ""}
 
     def observe(self, question: str, *, timeout: float = 5.0) -> str:
-        """Inspect the current visible desktop with the small disposable vision model."""
+        """Inspect the current visible desktop with the resident multimodal model."""
         path, _ = self._screenshot_digest()
         if not path:
             return "Не смогла получить снимок текущего экрана."
@@ -871,34 +888,38 @@ class DesktopOperator:
         return "Снимок сделан, но vision-контур недоступен."
 
     def _telegram_result_score(self, element: dict[str, Any], recipient: str) -> float | None:
-        """Score only a real Telegram search-result row, never a name chip/label."""
-        rec_n=self._norm(recipient); aliases=self._telegram_recipient_aliases(recipient); typ=self._norm(element.get("control_type")); cls=self._norm(element.get("class_name")); name=self._norm(element.get("name")); rect=element.get("rectangle") or []
-        # Telegram result rows begin with the visible display name/username.  A loose
-        # substring match used to select channels whose description merely contained a
-        # short dictated name (for example, ``теме`` inside ``в теме``).
-        matched=next((alias for alias in aliases if alias and name.startswith(alias)),"")
-        if not element.get("visible",True) or not element.get("enabled",True) or len(rect)!=4 or not matched:
+        """Score a real Telegram search row across Web and native Desktop clients."""
+        aliases=self._telegram_recipient_aliases(recipient)
+        typ=self._norm(element.get("control_type")); cls=self._norm(element.get("class_name")); name=self._norm(element.get("name")); rect=element.get("rectangle") or []
+        if self._is_browser_chrome(element) or not element.get("visible",True) or not element.get("enabled",True) or len(rect)!=4:
             return None
-        modern_row=typ=="button" and "listitem button" in cls
-        legacy_row=typ in {"hyperlink","listitem"} and "chatlist" in cls
-        if not (modern_row or legacy_row): return None
+        matched=next((alias for alias in aliases if alias and (name==alias or name.startswith(alias+" ") or (alias.startswith("@") and alias in name))),"")
+        if not matched:
+            return None
         width=max(0,int(rect[2])-int(rect[0])); height=max(0,int(rect[3])-int(rect[1]))
-        if modern_row and (width<420 or height<70): return None
-        score=8.0 if modern_row else 6.0
-        if name==matched: score+=4.0
+        modern_web=typ=="button" and "listitem button" in cls
+        legacy_web=typ in {"hyperlink","listitem"} and "chatlist" in cls
+        # Native Telegram Desktop exposes search rows differently between Qt/WinUI
+        # builds. Semantic row role + useful geometry + exact name evidence is enough;
+        # plain Text labels are deliberately excluded.
+        native_row=typ in {"button","listitem","treeitem"} and width>=170 and height>=26
+        if not (modern_web or legacy_web or native_row):
+            return None
+        score=8.0 if modern_web else (6.0 if legacy_web else 5.2)
+        if name==matched: score+=5.0
         if name.startswith(matched+" "): score+=2.5
-        if name.startswith(matched+" "+matched+" "): score+=1.5
-        if name.startswith("@") and matched in name: score+=2.0
-        if any(marker in name or marker in cls for marker in ("subscribers","subscriber","channel","members","member","участник","подписчик")): score-=5.0
-        if int(rect[0])<800: score+=1.0
-        score += max(0.0,1.4-max(0,int(rect[1])-420)/900.0)
-        return score
+        if any(marker in name or marker in cls for marker in ("subscribers","subscriber","channel","members","member","участник","подписчик","группа","group")):
+            score-=6.0
+        # Telegram's chat list/search lives in the left portion on normal layouts.
+        if int(rect[0])<900: score+=1.0
+        score += max(0.0,1.2-max(0,int(rect[1])-450)/1000.0)
+        return score if score>=4.5 else None
 
     @classmethod
     def _telegram_recipient_aliases(cls, recipient: str) -> list[str]:
         rec = cls._norm(recipient)
-        if rec in {"избранное", "избранном", "saved messages", "сохраненные сообщения", "сохраненные"}:
-            return ["saved messages", "избранное", "сохраненные сообщения"]
+        if rec in {"избранное", "избранном", "избранку", "saved messages", "saved message", "сохраненные сообщения", "сохраненные", "сохранённые сообщения", "себе", "мне"}:
+            return ["избранное", "saved messages", "сохраненные сообщения", "сохранённые сообщения"]
         return [rec] if rec else []
 
     def _telegram_ready(self, rows: list[dict[str, Any]]) -> bool:
@@ -911,9 +932,12 @@ class DesktopOperator:
             if not e.get("visible", True) or self._is_browser_chrome(e):
                 continue
             name=self._norm(e.get("name")); aid=self._norm(e.get("automation_id")); cls=self._norm(e.get("class_name"))
+            typ=self._norm(e.get("control_type"))
             if aid=="telegram-search-input" or name in {"search","поиск","chats","чаты"}:
                 return True
-            if "chatlist" in cls or "listitem button" in cls:
+            if typ in {"edit","combobox"} and any(mark in f"{name} {aid} {cls}" for mark in ("search","поиск","chat")):
+                return True
+            if "chatlist" in cls or "listitem button" in cls or (typ in {"listitem","treeitem"} and name):
                 return True
         return False
 
@@ -969,108 +993,213 @@ class DesktopOperator:
             "address":address_match,"header":header_match,"active":active_match,"composer":composer,
         }
 
-    def telegram_send(self, recipient: str, text: str) -> dict[str, Any]:
-        """Grounded Telegram send: loaded -> search -> result -> active chat -> composer -> send."""
+    def telegram_send(
+        self, recipient: str, text: str, *, expected_surface: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Grounded Telegram send with state-driven waits and safe recovery.
+
+        Transient loading never becomes a completed task. A committed message is never
+        sent twice unless the composer itself proves the first commit did not consume
+        the text.
+        """
         recipient=str(recipient or "").strip(); text=str(text or "").strip()
-        if not recipient or not text: raise RuntimeError("Нужны получатель и текст сообщения")
+        if not recipient or not text:
+            raise RuntimeError("Нужны получатель и текст сообщения")
         aliases=["Telegram","Телеграм","web.telegram"]
-        window=self.wait_window(aliases,.35); client="existing"
+        expected = dict(expected_surface or {})
+        expected_handle = self._coerce_window_id(expected.get("handle"))
+        expected_pid = self._coerce_window_id(expected.get("pid"))
+        window = None
+        client = "existing"
+        if expected_handle:
+            listing = self.tools.execute("window_list", {"max_windows": 120})
+            candidates = list(listing.get("result") or []) if listing.get("ok") else []
+            window = next(
+                (
+                    dict(row) for row in candidates if isinstance(row, dict)
+                    and self._coerce_window_id(row.get("handle")) == expected_handle
+                    and (not expected_pid or self._coerce_window_id(row.get("pid")) == expected_pid)
+                ),
+                None,
+            )
+            if not window:
+                raise RuntimeError("CONFIRMATION_SURFACE_DRIFT: окно Telegram изменилось")
+            client = "confirmed_surface"
+        else:
+            window=self.wait_window(aliases,.5)
         if not window:
             launched=self.tools.execute("launch_application",{"application":"Telegram"}); client="desktop"
             if not launched.get("ok"):
                 from .system_browser import open_url
                 open_url("https://web.telegram.org/a/"); client="web_default"
-            window=self.wait_window(aliases,7.0)
-        if not window: raise RuntimeError("Не появилось окно Telegram Desktop/Web")
-        handle=int(window.get("handle") or 0) or None; title=str(window.get("title") or "Telegram")
+            window=self.wait_window(aliases,15.0)
+        if not window:
+            raise RuntimeError("Не появилось окно Telegram Desktop/Web")
+        handle=self._coerce_window_id(window.get("handle")) or None; title=str(window.get("title") or "Telegram")
         if handle: self.tools.execute("window_focus",{"handle":handle})
-        # Loading time is state-based: wait until Telegram exposes search/chat content.
-        initial=self._elements(title,limit=360,handle=handle)
-        if not self._telegram_ready(initial):
-            deadline=time.monotonic()+5.0
-            while time.monotonic()<deadline and not self._telegram_ready(initial):
-                time.sleep(.15)
-                initial=self._elements(title,limit=360,handle=handle)
-            if not self._telegram_ready(initial):
-                raise RuntimeError("Telegram открылся, но интерфейс ещё не готов")
 
-        search=self.acquire_input(
-            purpose="search",aliases=["telegram-search-input","input-search-input","search","поиск"],
-            trigger_aliases=["Search","Поиск"],max_scrolls=0,visual_fallback=True,
-            title_hint=title,handle_hint=handle,
-        )
-        if not search.get("ok"): raise RuntimeError("Telegram открылся, но поле поиска ещё не готово")
-        search=self._clear_telegram_search(search)
-        search_text = "Saved Messages" if "saved messages" in self._telegram_recipient_aliases(recipient) else recipient
-        typed=self.type_verified(search,search_text,submit=False,require_verified=False)
-        if not typed.get("typed"):
-            raise RuntimeError("Поле поиска Telegram найдено, но ввести имя не получилось")
-        time.sleep(.18)
-        # A Telegram HTML search box may expose no ValuePattern at all.  Treat an actual
-        # clickable matching result row as the verification of the non-commit search text.
-        rec_n=self._norm(recipient); selected=None; rows=[]; end=time.monotonic()+6.0
-        while time.monotonic()<end and selected is None:
-            rows=self._elements(title,limit=380,handle=handle)
-            candidates=[]
-            for el in rows:
-                score=self._telegram_result_score(el,recipient)
-                if score is not None: candidates.append((score,el))
-            if candidates: selected=max(candidates,key=lambda x:x[0])[1]
-            else: time.sleep(.18)
-        if selected is None: raise RuntimeError(f"Нашла поиск Telegram, но не нашла однозначный чат «{recipient}»")
-        selected_name=str(selected.get("name") or ""); match=re.search(r"@[A-Za-z0-9_]{3,}",selected_name); selected_username=match.group(0) if match else ""
-        before=list(rows)
+        # Do not confuse a slow network/VPN start with a failed action. Wait for actual
+        # interactive affordances, not for a fixed five-second sleep.
+        initial=[]; ready_deadline=time.monotonic()+60.0
+        while time.monotonic()<ready_deadline:
+            initial=self._elements(title,limit=420,handle=handle)
+            if self._telegram_ready(initial):
+                break
+            time.sleep(.25)
+        if not self._telegram_ready(initial):
+            raise RuntimeError("Telegram остаётся в состоянии загрузки и пока не показал интерактивный интерфейс")
+
+        search=None; acquire_deadline=time.monotonic()+15.0
+        while time.monotonic()<acquire_deadline:
+            search=self.acquire_input(
+                purpose="search",aliases=["telegram-search-input","input-search-input","search","поиск"],
+                trigger_aliases=["Search","Поиск"],max_scrolls=0,visual_fallback=True,
+                title_hint=title,handle_hint=handle,
+            )
+            if search.get("ok"):
+                break
+            time.sleep(.3)
+        if not search or not search.get("ok"):
+            raise RuntimeError("Telegram открыт, но поле поиска пока не стало доступно")
+
+        saved = "избранное" in self._telegram_recipient_aliases(recipient)
+        queries=[recipient]
+        if saved:
+            queries=["Избранное","Saved Messages","Сохраненные сообщения"]
+        selected=None; rows=[]; selected_query=""
+        for search_text in queries:
+            search=self._clear_telegram_search(search)
+            typed=self.type_verified(search,search_text,submit=False,require_verified=False)
+            if not typed.get("typed"):
+                continue
+            selected_query=search_text
+            end=time.monotonic()+8.0
+            while time.monotonic()<end and selected is None:
+                rows=self._elements(title,limit=440,handle=handle)
+                candidates=[]
+                for el in rows:
+                    score=self._telegram_result_score(el,recipient)
+                    if score is not None:
+                        candidates.append((score,el))
+                if candidates:
+                    selected=max(candidates,key=lambda x:x[0])[1]
+                    break
+                time.sleep(.2)
+            if selected is not None:
+                break
+        if selected is None:
+            suffix=f" (пробовала: {', '.join(queries)})" if len(queries)>1 else ""
+            raise RuntimeError(f"Поле поиска работает, но не нашла однозначный чат «{recipient}»{suffix}")
+
+        selected_name=str(selected.get("name") or "")
+        username_match=re.search(r"@[A-Za-z0-9_]{3,}",selected_name)
+        selected_username=username_match.group(0) if username_match else ""
         if not self.click_element(title,selected,goal="telegram_open_chat"):
             raise RuntimeError(f"Чат «{recipient}» найден, но открыть его не получилось")
-        # Telegram has live timestamps/presence, so waiting for a globally stable UI
-        # can burn the full timeout even when the requested chat is already open.
-        opened_rows=[]; evidence={}; deadline=time.monotonic()+3.4
+
+        opened_rows=[]; evidence={}; confirmed=False; deadline=time.monotonic()+18.0
         while time.monotonic()<deadline:
-            opened_rows=self._elements(title,limit=380,handle=handle)
+            opened_rows=self._elements(title,limit=440,handle=handle)
             confirmed,evidence=self._telegram_chat_evidence(opened_rows,recipient,selected_username)
             if confirmed:
                 break
-            time.sleep(.15)
-        else:
-            confirmed=False
+            time.sleep(.2)
         if not confirmed:
             raise RuntimeError(f"Чат «{recipient}» найден, но Telegram не подтвердил переход в него")
-        self._trace("OPERATOR_VERIFY",app="telegram",action="open_chat",recipient=recipient,verified=True,**evidence)
+        self._trace("OPERATOR_VERIFY",app="telegram",action="open_chat",recipient=recipient,verified=True,query=selected_query,**evidence)
 
-        composer=self.acquire_input(
-            purpose="composer",aliases=["input-message-input","write a message","сообщение","message","composer","contenteditable"],
-            trigger_aliases=None,max_scrolls=0,visual_fallback=False,
-            title_hint=title,handle_hint=handle,
-        )
-        if not composer.get("ok"):
-            raise RuntimeError(f"Чат «{recipient}» открыт, но поле сообщения не найдено")
+        composer=None; compose_deadline=time.monotonic()+18.0
+        while time.monotonic()<compose_deadline:
+            composer=self.acquire_input(
+                purpose="composer",aliases=["input-message-input","editable-message-text","write a message","сообщение","message","composer","contenteditable"],
+                trigger_aliases=None,max_scrolls=0,visual_fallback=False,
+                title_hint=title,handle_hint=handle,
+            )
+            if composer.get("ok"):
+                break
+            time.sleep(.25)
+        if not composer or not composer.get("ok"):
+            raise RuntimeError(f"Чат «{recipient}» открыт, но поле сообщения не появилось")
+
         typed=self.type_verified(composer,text,submit=False,require_verified=True)
         if not typed.get("ok"):
-            raise RuntimeError("Поле сообщения найдено, но Telegram не подтвердил появление текста; отправлять вслепую не стала")
-        before_send=self._elements(title,limit=380,handle=handle); before_sig=self._ui_fingerprint(before_send)
+            # Re-enumerate after a SPA/native transition and attempt an idempotent
+            # replace once. type_verified replaces the focused field, not appending.
+            time.sleep(.35)
+            retry=self.acquire_input(
+                purpose="composer",aliases=["input-message-input","editable-message-text","write a message","сообщение","message","composer","contenteditable"],
+                trigger_aliases=None,max_scrolls=0,visual_fallback=False,title_hint=title,handle_hint=handle,
+            )
+            if retry.get("ok"):
+                typed=self.type_verified(retry,text,submit=False,require_verified=True)
+                if typed.get("ok"):
+                    composer=retry
+        if not typed.get("ok"):
+            raise RuntimeError("Поле сообщения найдено, но Telegram не подтвердил появление текста; отправка не выполнялась")
+
+        before_send=self._elements(title,limit=440,handle=handle); before_sig=self._ui_fingerprint(before_send)
         commit=self.commit_composer(composer)
         if not commit.get("ok"):
             raise RuntimeError(str(commit.get("error") or "Не удалось нажать кнопку отправки Telegram"))
-        # Verify only after the one commit; never press Enter/click Send a second time.
-        end=time.monotonic()+5.0; verified=False; composer_empty=False; text_visible=False; send_reset=False
-        while time.monotonic()<end:
-            current=self._elements(title,limit=380,handle=handle)
+
+        def inspect_send_state() -> tuple[bool,bool,bool,bool,list[dict[str,Any]]]:
+            current=self._elements(title,limit=440,handle=handle)
+            payload=self._norm(text); text_visible=False; composer_empty=False; composer_contains=False; failure=False
             for e in current:
-                if self._is_browser_chrome(e): continue
-                rect=e.get("rectangle") or []; blob=self._norm(f"{e.get('name','')} {e.get('value','')} {e.get('class_name','')}")
-                if len(rect)==4 and int(rect[0])>=760 and int(rect[1])>=250 and self._norm(text) in blob: text_visible=True
-                if any(x in blob for x in ("input message","input-message","write a message","сообщение")) and self._norm(text) not in blob:
-                    composer_empty=True
+                if self._is_browser_chrome(e):
+                    continue
+                rect=e.get("rectangle") or []
+                typ=self._norm(e.get("control_type"))
+                blob=self._norm(f"{e.get('name','')} {e.get('value','')} {e.get('class_name','')}")
+                if any(mark in blob for mark in ("failed to send","не отправлено","ошибка отправки","retry message","повторить отправку")):
+                    failure=True
+                composer_like=typ in {"edit","combobox","group","document"} and any(x in blob for x in ("input message","input-message","write a message","сообщение","composer","editable-message"))
+                if composer_like:
+                    if payload and payload in blob:
+                        composer_contains=True
+                    elif payload not in blob:
+                        composer_empty=True
+                # Exact outgoing text anywhere in the chat content is strong evidence.
+                if payload and payload in blob and len(rect)==4 and int(rect[3])>180 and not composer_like:
+                    text_visible=True
             button=self._telegram_send_button(current,ready_only=False)
+            send_reset=False
             if button is not None:
                 tokens={token for token in re.split(r"\s+",str(button.get("class_name") or "").casefold()) if token}
                 send_reset="record" in tokens and "send" not in tokens
-            if text_visible or (send_reset and self._ui_fingerprint(current)!=before_sig) or (composer_empty and self._ui_fingerprint(current)!=before_sig):
-                verified=True; break
-            time.sleep(.18)
-        self._trace("OPERATOR_VERIFY",app="telegram",action="send",recipient=recipient,verified=verified,text_visible=text_visible,composer_empty=composer_empty,send_reset=send_reset,commit_method=commit.get("method"),active_chat=True)
+            return text_visible,composer_empty,composer_contains,bool(send_reset and not failure),current
+
+        verified=False; text_visible=False; composer_empty=False; composer_contains=False; send_reset=False
+        safe_commit_retried=False
+        end=time.monotonic()+45.0
+        while time.monotonic()<end:
+            text_visible,composer_empty,composer_contains,send_reset,current=inspect_send_state()
+            changed=self._ui_fingerprint(current)!=before_sig
+            if text_visible or (composer_empty and changed) or (send_reset and changed):
+                verified=True
+                break
+            if composer_contains and not safe_commit_retried:
+                # The text still being present proves the first commit was not consumed.
+                # Allow exactly one repeat commit; never hammer Send while Telegram is
+                # reconnecting or its accessibility tree is stale.
+                retry_commit=self.commit_composer({**composer,"rows":current})
+                safe_commit_retried=True
+                if retry_commit.get("ok"):
+                    commit={**retry_commit,"method":f"retry_{retry_commit.get('method','commit')}"}
+                    before_sig=self._ui_fingerprint(current)
+                composer_contains=False
+            time.sleep(.25)
+        self._trace(
+            "OPERATOR_VERIFY",app="telegram",action="send",recipient=recipient,verified=verified,
+            text_visible=text_visible,composer_empty=composer_empty,send_reset=send_reset,
+            composer_contains=composer_contains,commit_method=commit.get("method"),active_chat=True,
+        )
         if not verified:
-            return {"sent":True,"verified":False,"completed":True,"recipient":recipient,"client":client,"method":commit.get("method"),"error":"Кнопка отправки нажата один раз, но появление bubble не подтверждено"}
+            return {
+                "sent":True,"verified":False,"completed":False,"recipient":recipient,
+                "client":client,"method":commit.get("method"),
+                "error":"Команда отправки была выполнена, но Telegram не подтвердил доставку; задача не помечена завершённой",
+            }
         return {"sent":True,"verified":True,"completed":True,"recipient":recipient,"client":client,"method":commit.get("method")}
 
     def telegram_send_file(self, recipient: str, path: str) -> dict[str, Any]:
@@ -1229,6 +1358,327 @@ class DesktopOperator:
         self._trace("OPERATOR_VERIFY", app="telegram", action="send_file", recipient=recipient, file=filename, verified=verified)
         return {"ok": True, "sent": True, "completed": True, "verified": verified, "recipient": recipient, "file": str(file_path), "client": client}
 
+    def yandex_surface(self, timeout: float = .5, *, focus: bool = False) -> dict[str, Any] | None:
+        """Find a real Yandex Music page even after its title becomes Track — Artist."""
+        deadline = time.monotonic() + max(.15, float(timeout))
+        while time.monotonic() < deadline:
+            for window in self._windows():
+                title = str(window.get("title") or "")
+                title_n = self._norm(title)
+                class_n = self._norm(window.get("class_name"))
+                direct = bool(re.search(r"(?:яндекс\s+музык|yandex\s+music|music\s+yandex)", title_n))
+                browser = bool(
+                    direct
+                    or re.search(r"(?:chrome|edge|firefox|opera|browser|samsung|yandex)", f"{title_n} {class_n}")
+                    or "chrome widgetwin" in class_n
+                )
+                if not browser:
+                    continue
+                handle = int(window.get("handle") or 0) or None
+                rows = self._elements(title, limit=420, handle=handle)
+                blobs = [self._norm(self._element_blob(row)) for row in rows if row.get("visible", True)]
+                joined = " | ".join(blobs)
+                structural = any(mark in joined for mark in (
+                    "vibeplayercontrols", "barbelow", "playercontrols", "music yandex ru",
+                ))
+                semantic_hits = sum(1 for mark in (
+                    "моя волна", "следующая песня", "предыдущая песня", "нравится",
+                    "не нравится", "воспроизведение", "пауза", "коллекция",
+                ) if mark in joined)
+                if not (direct or structural or semantic_hits >= 3):
+                    background_tab = next((
+                        row for row in rows
+                        if self._norm(row.get("control_type")) == "tabitem"
+                        and re.search(
+                            r"(?:яндекс\s+музык|yandex\s+music|music\s*yandex|music\.yandex)",
+                            self._norm(self._element_blob(row)),
+                        )
+                    ), None)
+                    if background_tab is None:
+                        continue
+                    if not focus:
+                        return {
+                            **window, "handle": int(handle or 0), "title": title,
+                            "surface": "yandex_music", "background_tab": True,
+                        }
+                    if handle:
+                        self.tools.execute("window_focus", {"handle": handle})
+                    if not self.click_element(title, background_tab, goal="yandex_activate_tab"):
+                        continue
+                    time.sleep(.38)
+                    refreshed = self._elements(title, limit=420, handle=handle)
+                    refreshed_blob = " | ".join(
+                        self._norm(self._element_blob(row)) for row in refreshed if row.get("visible", True)
+                    )
+                    refreshed_hits = sum(1 for mark in (
+                        "моя волна", "следующая песня", "предыдущая песня", "нравится",
+                        "не нравится", "воспроизведение", "пауза", "коллекция",
+                    ) if mark in refreshed_blob)
+                    if not (
+                        any(mark in refreshed_blob for mark in (
+                            "vibeplayercontrols", "barbelow", "playercontrols", "music yandex ru",
+                        ))
+                        or refreshed_hits >= 3
+                    ):
+                        continue
+                if focus and handle:
+                    self.tools.execute("window_focus", {"handle": handle})
+                return {**window, "handle": int(handle or 0), "title": title, "surface": "yandex_music"}
+            time.sleep(.12)
+        return None
+
+    @staticmethod
+    def _clock_seconds(value: str) -> list[int]:
+        out: list[int] = []
+        for hours, minutes, seconds in re.findall(r"(?:(\d{1,2}):)?(\d{1,3}):(\d{2})", str(value or "")):
+            out.append((int(hours or 0) * 3600) + int(minutes) * 60 + int(seconds))
+        return out
+
+    def yandex_player_control(self, request: str) -> dict[str, Any]:
+        """Execute one grounded Yandex Music control and verify the post-state."""
+        clean = self._norm(request)
+        surface = self.yandex_surface(timeout=.7, focus=True)
+        if not surface:
+            raise RuntimeError("Открытая Яндекс Музыка не найдена")
+        handle = int(surface.get("handle") or 0) or None
+        title = str(surface.get("title") or "Яндекс Музыка")
+
+        def rows() -> list[dict[str, Any]]:
+            return self._elements(title, limit=520, handle=handle)
+
+        def usable(element: dict[str, Any], *, roles: tuple[str, ...] = ("button",)) -> bool:
+            if not element.get("visible", True) or not element.get("enabled", True):
+                return False
+            if self._norm(element.get("control_type")) not in roles:
+                return False
+            rect = element.get("rectangle") or []
+            return len(rect) == 4 and int(rect[3]) > 150 and self._rect_area(rect) >= 80
+
+        def blob(element: dict[str, Any]) -> str:
+            return self._norm(self._element_blob(element))
+
+        def find_control(aliases: tuple[str, ...], *, reject: tuple[str, ...] = ()) -> dict[str, Any] | None:
+            wanted = tuple(self._norm(item) for item in aliases)
+            rejected = tuple(self._norm(item) for item in reject)
+            candidates: list[tuple[float, dict[str, Any]]] = []
+            for element in rows():
+                if not usable(element, roles=("button", "slider", "progressbar")):
+                    continue
+                value = blob(element)
+                if any(term and term in value for term in rejected):
+                    continue
+                score = max((self._score(value, [term]) for term in wanted), default=0.0)
+                if any(term == value for term in wanted):
+                    score += 1.0
+                if score >= .60:
+                    candidates.append((score, element))
+            return max(candidates, key=lambda item: item[0])[1] if candidates else None
+
+        def playback_state(current: list[dict[str, Any]] | None = None) -> str:
+            current = current if current is not None else rows()
+            for element in current:
+                if not usable(element):
+                    continue
+                value = blob(element)
+                if re.search(r"(?:^| )(?:пауза|pause)(?: |$)|vibeplayercontrols playbutton playing", value):
+                    return "playing"
+            for element in current:
+                if not usable(element):
+                    continue
+                value = blob(element)
+                if re.search(r"(?:^| )(?:воспроизвести|воспроизведение|play|resume)(?: |$)|vibeplayercontrols playbutton", value):
+                    return "paused"
+            return "unknown"
+
+        def track_signature(current: list[dict[str, Any]] | None = None) -> str:
+            current = current if current is not None else rows()
+            values: list[str] = []
+            for element in current:
+                if not element.get("visible", True):
+                    continue
+                if self._norm(element.get("control_type")) in {"button", "slider", "progressbar"}:
+                    continue
+                value = self._norm(element.get("name") or element.get("value") or "")
+                if 2 < len(value) < 180 and value not in values:
+                    values.append(value)
+            return "|".join(values[:20])[:1800]
+
+        action = ""
+        if re.search(r"\b(?:дизлайк|не\s+нравится)\b", clean):
+            action = "dislike"
+        elif re.search(r"\b(?:лайк|нравится)\b", clean):
+            action = "like"
+        elif re.search(r"\bследующ", clean):
+            action = "next"
+        elif re.search(r"\bпредыдущ", clean):
+            action = "previous"
+        elif re.search(r"\b(?:перемот|промот)\w*", clean):
+            action = "seek"
+        elif re.search(r"\b(?:повтор|зацикл)", clean):
+            action = "repeat"
+        elif re.search(r"\b(?:перемеша|случайн\w*\s+поряд)", clean):
+            action = "shuffle"
+        elif re.search(r"\b(?:какая\s+песня|какой\s+трек|что\s+играет)", clean):
+            action = "info"
+        elif re.search(r"\b(?:пауз|приостанов)", clean):
+            action = "pause"
+        elif re.search(r"\b(?:продолж|возобнов|играй|включ|воспроизвед|запуст)", clean):
+            action = "play"
+        if not action:
+            raise RuntimeError("Не распознала команду плеера")
+
+        before_rows = rows()
+        before_state = playback_state(before_rows)
+        before_track = track_signature(before_rows)
+        if action == "info":
+            window_rect = surface.get("rectangle") or []
+            bottom = int(window_rect[3]) if len(window_rect) == 4 else 1000
+            floor = bottom - max(260, int((bottom - int(window_rect[1] if len(window_rect) == 4 else 0)) * .30))
+            positioned: list[tuple[int, int, str]] = []
+            generic = re.compile(
+                r"^(?:главная|моя\s+волна|коллекция|треки|альбомы|исполнители|подкасты|"
+                r"следующ\w*|предыдущ\w*|пауза|воспроизвед\w*|нравится|не\s+нравится)$",
+                re.I,
+            )
+            for element in before_rows:
+                if not element.get("visible", True) or self._norm(element.get("control_type")) not in {"text", "hyperlink"}:
+                    continue
+                name = str(element.get("name") or "").strip()
+                rect = element.get("rectangle") or []
+                if not (2 < len(name) < 120 and len(rect) == 4 and int(rect[1]) >= floor):
+                    continue
+                if generic.match(self._norm(name)) or re.fullmatch(r"\d{1,2}:\d{2}", name):
+                    continue
+                positioned.append((int(rect[1]), int(rect[0]), name))
+            labels: list[str] = []
+            for _y, _x, name in sorted(positioned):
+                if name not in labels:
+                    labels.append(name)
+            if not labels:
+                labels = [
+                    str(element.get("name") or "").strip() for element in before_rows
+                    if element.get("visible", True)
+                    and self._norm(element.get("control_type")) in {"text", "hyperlink"}
+                    and 2 < len(str(element.get("name") or "").strip()) < 120
+                    and not generic.match(self._norm(element.get("name")))
+                ]
+            return {"ok": bool(labels), "completed": False, "verified": bool(labels), "action": action, "track": " — ".join(labels[:2])}
+
+        if action in {"play", "pause"}:
+            desired = "playing" if action == "play" else "paused"
+            if before_state == desired:
+                return {"ok": True, "completed": False, "verified": True, "action": action, "before_state": before_state, "after_state": before_state, "method": "already"}
+            target = find_control(("Воспроизведение", "Воспроизвести", "Play", "Resume", "VibePlayerControls_playButton")) if action == "play" else find_control(("Пауза", "Pause", "VibePlayerControls_playButton_playing"))
+        elif action == "like":
+            target = find_control(("Нравится", "Like"), reject=("Не нравится", "Dislike"))
+        elif action == "dislike":
+            target = find_control(("Не нравится", "Dislike"))
+        elif action == "next":
+            target = find_control(("Следующая песня", "Следующий трек", "Next"))
+        elif action == "previous":
+            target = find_control(("Предыдущая песня", "Предыдущий трек", "Previous", "Prev"))
+        elif action == "repeat":
+            target = find_control(("Повтор", "Зациклить", "Repeat"))
+        elif action == "shuffle":
+            target = find_control(("Перемешать", "Случайный порядок", "Shuffle"))
+        else:
+            target = None
+
+        if action == "seek":
+            amount_match = re.search(r"(\d{1,4})\s*(?:сек|секунд|с\b)", clean)
+            if amount_match:
+                amount = min(3600, int(amount_match.group(1)))
+            else:
+                word_amounts = {
+                    "одну": 1, "один": 1, "две": 2, "два": 2, "три": 3,
+                    "пять": 5, "десять": 10, "пятнадцать": 15, "двадцать": 20,
+                    "тридцать": 30, "сорок": 40, "пятьдесят": 50, "шестьдесят": 60,
+                }
+                amount = next((value for word, value in word_amounts.items() if re.search(rf"\b{word}\b", clean)), 10)
+            delta = -amount if re.search(r"\b(?:назад|обратно)\b", clean) else amount
+            timelines: list[tuple[int, dict[str, Any], list[int]]] = []
+            for element in before_rows:
+                if not usable(element, roles=("slider", "progressbar")):
+                    continue
+                rect = element.get("rectangle") or []
+                width = int(rect[2]) - int(rect[0]) if len(rect) == 4 else 0
+                clocks = self._clock_seconds(f"{element.get('name','')} {element.get('value','')}")
+                value = blob(element)
+                score = width + (1000 if len(clocks) >= 2 else 0) + (800 if re.search(r"позици|время|трек|seek|progress", value) else 0)
+                timelines.append((score, element, clocks))
+            if not timelines:
+                raise RuntimeError("Ползунок трека не найден; перемотку не выполняла")
+            _, timeline, clocks = max(timelines, key=lambda item: item[0])
+            if len(clocks) < 2 or clocks[-1] <= 0:
+                raise RuntimeError("Плеер не показал текущую позицию и длительность; перемотку не выполняла")
+            current, duration = clocks[0], clocks[-1]
+            wanted = max(0, min(duration, current + delta))
+            rect = [int(value) for value in timeline.get("rectangle")]
+            x = int(rect[0] + (wanted / duration) * max(1, rect[2] - rect[0]))
+            y = int((rect[1] + rect[3]) / 2)
+            clicked = bool(self.tools.execute("click", {"x": x, "y": y}).get("ok"))
+            if not clicked:
+                raise RuntimeError("Не удалось изменить позицию трека")
+            time.sleep(.35)
+            after_rows = rows()
+            after_clock: list[int] = []
+            for element in after_rows:
+                if self._norm(element.get("control_type")) in {"slider", "progressbar"}:
+                    values = self._clock_seconds(f"{element.get('name','')} {element.get('value','')}")
+                    if len(values) >= 2:
+                        after_clock = values
+                        break
+            after_position = after_clock[0] if after_clock else -1
+            verified = after_position >= 0 and (after_position > current if delta > 0 else after_position < current)
+            self._trace("OPERATOR_VERIFY", app="yandex_music", action=action, delta=delta, before=current, after=after_position, verified=verified)
+            return {"ok": verified, "completed": True, "verified": verified, "action": action, "seconds": delta, "before_position": current, "after_position": after_position, "method": "timeline"}
+
+        if target is None:
+            raise RuntimeError(f"Кнопка плеера для действия «{action}» не найдена")
+        before_target = blob(target)
+        if not self.click_element(title, target, goal=f"yandex_{action}"):
+            raise RuntimeError(f"Кнопку «{action}» нашла, но нажать не получилось")
+        time.sleep(.32)
+        after_rows = rows()
+        after_state = playback_state(after_rows)
+        after_track = track_signature(after_rows)
+        if action in {"play", "pause"}:
+            desired = "playing" if action == "play" else "paused"
+            deadline = time.monotonic() + 2.2
+            while after_state != desired and time.monotonic() < deadline:
+                time.sleep(.16); after_rows = rows(); after_state = playback_state(after_rows)
+            verified = after_state == desired
+        elif action in {"next", "previous"}:
+            deadline = time.monotonic() + 3.0
+            while before_track == after_track and time.monotonic() < deadline:
+                time.sleep(.16)
+                after_rows = rows()
+                after_track = track_signature(after_rows)
+            verified = bool(before_track and after_track and before_track != after_track)
+        else:
+            target_rect = target.get("rectangle") or []
+            post_target = None
+            if len(target_rect) == 4:
+                cx = (int(target_rect[0]) + int(target_rect[2])) // 2
+                cy = (int(target_rect[1]) + int(target_rect[3])) // 2
+                candidates = []
+                for element in after_rows:
+                    if not usable(element):
+                        continue
+                    rect = element.get("rectangle") or []
+                    if len(rect) != 4:
+                        continue
+                    ex = (int(rect[0]) + int(rect[2])) // 2
+                    ey = (int(rect[1]) + int(rect[3])) // 2
+                    distance = abs(ex - cx) + abs(ey - cy)
+                    if distance <= 120:
+                        candidates.append((distance, element))
+                if candidates:
+                    post_target = min(candidates, key=lambda item: item[0])[1]
+            verified = bool(post_target is not None and blob(post_target) != before_target)
+        self._trace("OPERATOR_VERIFY", app="yandex_music", action=action, before_state=before_state, after_state=after_state, verified=verified)
+        return {"ok": bool(verified), "completed": True, "verified": bool(verified), "action": action, "before_state": before_state, "after_state": after_state, "before_track": before_track, "after_track": after_track, "method": "semantic_control", "error": "Кнопка нажата один раз, но изменение состояния не подтвердилось" if not verified else ""}
+
     def yandex_wave(self) -> dict[str, Any]:
         """Start Yandex Music once, using the stable browser HWND as source of truth.
 
@@ -1238,13 +1688,13 @@ class DesktopOperator:
         performs at most one navigation to ``Моя волна`` and at most one Play click.
         """
         aliases=["Яндекс Музыка","Yandex Music","music.yandex"]
-        window=self.wait_window(aliases,.35)
+        window=self.yandex_surface(timeout=.35, focus=False)
         opened=False
         if not window:
             from .system_browser import open_url
             open_url("https://music.yandex.ru/")
             opened=True
-            window=self.wait_window(aliases,6.0)
+            window=self.yandex_surface(timeout=8.0, focus=False)
         if not window:
             raise RuntimeError("Яндекс Музыка не появилась в браузере по умолчанию")
         handle=int(window.get("handle") or 0) or None
@@ -1318,7 +1768,7 @@ class DesktopOperator:
             return "unknown"
 
         # Allow the SPA to settle without relying on a changing title.
-        settle=time.monotonic()+3.0
+        settle=time.monotonic()+8.0
         state="unknown"
         while time.monotonic()<settle:
             state=playback_state()
@@ -1338,7 +1788,7 @@ class DesktopOperator:
         play=exact_play_button(rows_now)
         if not play:
             # Give a just-opened SPA a short bounded chance to expose the real player.
-            deadline=time.monotonic()+2.8
+            deadline=time.monotonic()+10.0
             while time.monotonic()<deadline and not play:
                 time.sleep(.16)
                 play=exact_play_button()
@@ -1354,7 +1804,7 @@ class DesktopOperator:
             if wave:
                 self.click_element(title,wave,goal="yandex_my_wave")
                 # Navigation can change title/tree; keep polling the same HWND.
-                end=time.monotonic()+3.0
+                end=time.monotonic()+10.0
                 while time.monotonic()<end:
                     state=playback_state()
                     if state=="playing":
@@ -1367,7 +1817,7 @@ class DesktopOperator:
             raise RuntimeError("На текущем экране Яндекс Музыки не нашла кнопку воспроизведения")
         if not self.click_element(title,play,goal="yandex_play"):
             raise RuntimeError("Кнопку воспроизведения Яндекс Музыки нашла, но нажать не получилось")
-        end=time.monotonic()+2.5
+        end=time.monotonic()+15.0
         verified=False
         while time.monotonic()<end:
             if playback_state()=="playing":
@@ -1465,26 +1915,69 @@ class DesktopOperator:
                 "query": query, "matched": str(target.get("name") or ""), "method": "search+semantic-play"}
 
     def telegram_thread_context(self, limit: int = 18) -> dict[str, Any]:
-        """Read visible active Telegram chat messages and separate likely owner/peer sides."""
-        win=self.wait_window(["Telegram","web.telegram","Телеграм"],.25)
-        if not win: return {"ok":False,"error":"Telegram не открыт"}
+        """Read the visible active Telegram thread without assuming one screen size."""
+        win=self.wait_window(["Telegram","web.telegram","Телеграм"],.5)
+        if not win:
+            return {"ok":False,"error":"Telegram не открыт"}
         title=str(win.get("title") or "Telegram"); handle=int(win.get("handle") or 0) or None
-        rows=self._elements(title,limit=360,handle=handle)
-        active=[e for e in rows if "chatlist chat" in self._norm(e.get("class_name")) and " active" in (" "+self._norm(e.get("class_name")))]
+        rows=self._elements(title,limit=460,handle=handle)
+        win_rect=win.get("rectangle") or []
+        if len(win_rect)==4:
+            left,top,right,bottom=[int(v) for v in win_rect]
+        else:
+            rects=[e.get("rectangle") or [] for e in rows if len(e.get("rectangle") or [])==4]
+            left=min((int(r[0]) for r in rects),default=0); top=min((int(r[1]) for r in rects),default=0)
+            right=max((int(r[2]) for r in rects),default=1920); bottom=max((int(r[3]) for r in rects),default=1080)
+        width=max(640,right-left); height=max(480,bottom-top)
+        chat_left=left+int(width*.30)
+        content_top=top+min(190,max(90,int(height*.10)))
+        content_bottom=bottom-min(70,max(40,int(height*.05)))
+        owner_split=left+int(width*.66)
+
+        active=[]
+        for e in rows:
+            blob=self._norm(self._element_blob(e)); cls=self._norm(e.get("class_name")); name=self._norm(e.get("name"))
+            if "chatlist" in cls and "active" in cls:
+                active.append(e)
+            elif self._norm(e.get("control_type")) in {"listitem","button","treeitem"} and e.get("selected") and name:
+                active.append(e)
         recipient=self._norm((active[0].get("name") if active else ""))
+        if not recipient:
+            # Fall back to the top-bar title of the current chat, not the browser tab.
+            headers=[]
+            for e in rows:
+                rect=e.get("rectangle") or []
+                name=str(e.get("name") or "").strip()
+                if not name or len(rect)!=4 or self._is_browser_chrome(e):
+                    continue
+                if int(rect[0])>=chat_left and top+45<=int(rect[1])<=content_top+30 and self._norm(e.get("control_type")) in {"text","button","group"}:
+                    headers.append((self._rect_area(rect),name))
+            if headers:
+                recipient=self._norm(max(headers,key=lambda item:item[0])[1])
+
         msgs=[]
         for e in rows:
-            if self._norm(e.get("control_type"))!="text": continue
+            typ=self._norm(e.get("control_type"))
+            if typ not in {"text","document","group"}:
+                continue
             name=str(e.get("name") or "").strip(); rect=e.get("rectangle") or []
-            if not name or len(rect)!=4: continue
+            if not name or len(rect)!=4 or self._is_browser_chrome(e):
+                continue
             x1,y1,x2,y2=[int(v) for v in rect]
-            if x1<780 or y1<280 or y1>1565: continue
-            if re.fullmatch(r"\d{1,2}:\d{2}",name) or len(name)>1200: continue
-            if name.casefold() in {"today","yesterday","message","user info"}: continue
-            side="owner" if x1>=1800 else "peer"
+            if x2<chat_left or y1<content_top or y1>content_bottom:
+                continue
+            normalized=self._norm(name)
+            if re.fullmatch(r"\d{1,2}:\d{2}",name) or len(name)>1600:
+                continue
+            if normalized in {"today","yesterday","сегодня","вчера","message","сообщение","user info","информация"}:
+                continue
+            if any(mark in normalized for mark in ("write a message","input message","написать сообщение")):
+                continue
+            center=(x1+x2)//2
+            side="owner" if center>=owner_split else "peer"
             msgs.append({"side":side,"text":name,"x":x1,"y":y1})
-        msgs=sorted(msgs,key=lambda x:x["y"])[-max(4,int(limit)):]
-        return {"ok":bool(msgs),"recipient":recipient,"messages":msgs,"title":title}
+        msgs=sorted(msgs,key=lambda x:(x["y"],x["x"]))[-max(4,int(limit)):]
+        return {"ok":bool(msgs),"recipient":recipient,"messages":msgs,"title":title,"window":{"left":left,"top":top,"right":right,"bottom":bottom}}
 
     def answer_discord_call(self) -> dict[str, Any]:
         launched = self.tools.execute("launch_application", {"application": "Discord"})

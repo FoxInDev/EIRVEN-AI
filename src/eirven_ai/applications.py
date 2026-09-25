@@ -1,3 +1,8 @@
+# EIRVEN AI — 2.4.0
+# Copyright (c) 2026 Даниил Павлов. Все права защищены. / All rights reserved.
+# Лицензия: EIRVEN Non-Commercial License — см. файл LICENSE.
+# Обязательна видимая подпись «На базе Эрви». Скрывать её запрещено (см. LICENSE).
+# EIRVEN-LICENSE-HEADER
 from __future__ import annotations
 
 import json
@@ -14,8 +19,23 @@ from typing import Any
 from urllib.parse import quote_plus
 
 from .browser import BrowserAutomation
+from .human_errors import humanize, explain
 
 from .system_browser import open_url as open_system_url, open_search as open_system_search
+from .win_input import send_virtual_keys
+
+
+def _no_window_flags() -> int:
+    """Windows console-suppression flags for helper subprocesses.
+
+    Without this every PowerShell/helper invocation briefly pops a console window
+    over whatever the user is doing. Returns 0 off Windows so the same call sites
+    stay portable.
+    """
+    if os.name != "nt":
+        return 0
+    return getattr(subprocess, "CREATE_NO_WINDOW", 0)
+
 
 
 class ApplicationError(RuntimeError):
@@ -46,9 +66,43 @@ class ApplicationService:
                     self._cache = [
                         InstalledApplication(str(item.get("name") or ""), str(item.get("app_id") or ""))
                         for item in raw if isinstance(item, dict) and item.get("name") and item.get("app_id")
+                        and not self._is_non_launch_entry(str(item.get("name") or ""), str(item.get("app_id") or ""))
                     ]
             except Exception:
                 self._cache = None
+
+    @staticmethod
+    def _is_non_launch_entry(name: str, app_id: str) -> bool:
+        """Exclude Start-menu links that are documentation, installers or URLs.
+
+        ``Get-StartApps`` mixes real applications with entries such as "Python install
+        manager", "Install Additional Tools", documentation pages and uninstallers.
+        Treating those rows as executable apps made an ordinary task drift into an
+        installer.  They remain available to Windows itself, but are not candidates for
+        EIRVEN's launch capability; an absent app can then take the browser fallback.
+        """
+        label = str(name or "").casefold().replace("ё", "е")
+        identifier = str(app_id or "").casefold()
+        markers = (
+            "install", "installer", "uninstall", "documentation", " docs", "manual",
+            "module docs", "website", "release notes", "faq", "samples",
+            "установщик", "установить", "удалить", "документац", "справк",
+        )
+        if any(marker in label for marker in markers):
+            return True
+        if identifier.startswith(("http://", "https://")) or identifier.endswith(
+            (".url", ".html", ".htm", ".chm", ".txt", ".pdf", ".md")
+        ):
+            return True
+        # Some vendor Start-menu rows are deceptively named like the product while
+        # pointing at an installer executable (for example Roblox Studio →
+        # RobloxStudioInstaller.exe).  They are not valid launch targets for EIRVEN.
+        if any(marker in identifier for marker in (
+            "installer", "uninstaller", "setup.exe", "install.exe", "uninstall.exe",
+            "setup.msi", "install.msi", "uninstall.msi",
+        )):
+            return True
+        return False
 
     def list_installed(self, refresh: bool = False) -> list[dict[str, str]]:
         if self._cache is not None and not refresh:
@@ -59,20 +113,35 @@ class ApplicationService:
                 "powershell",
                 "-NoProfile",
                 "-Command",
-                "Get-StartApps | Select-Object Name,AppID | ConvertTo-Json -Compress",
+                "[Console]::OutputEncoding=[System.Text.Encoding]::UTF8; Get-StartApps | Select-Object Name,AppID | ConvertTo-Json -Compress",
             ]
             try:
                 result = subprocess.run(
                     command,
                     capture_output=True,
-                    text=True,
-                    encoding="utf-8",
-                    errors="replace",
                     timeout=8,
                     shell=False,
+                    creationflags=_no_window_flags(),
                 )
-                if result.returncode == 0 and result.stdout.strip():
-                    parsed = json.loads(result.stdout)
+                raw_stdout = result.stdout or b""
+                if isinstance(raw_stdout, bytes):
+                    # PowerShell chooses its console code page from the launching
+                    # supervisor.  Prefer UTF-8, but recover Cyrillic names when a
+                    # detached Windows worker emits CP1251/CP866 instead of silently
+                    # turning every localized app into replacement characters.
+                    utf8 = raw_stdout.decode("utf-8", errors="replace")
+                    if "\ufffd" not in utf8:
+                        stdout = utf8
+                    else:
+                        decoded = [
+                            raw_stdout.decode(encoding, errors="replace")
+                            for encoding in ("cp1251", "cp866")
+                        ]
+                        stdout = min(decoded, key=lambda value: value.count("\ufffd"))
+                else:
+                    stdout = str(raw_stdout)
+                if result.returncode == 0 and stdout.strip():
+                    parsed = json.loads(stdout)
                     rows = parsed if isinstance(parsed, list) else [parsed]
                     items = [
                         InstalledApplication(str(row.get("Name") or ""), str(row.get("AppID") or ""))
@@ -86,6 +155,7 @@ class ApplicationService:
                 path = shutil.which(executable)
                 if path:
                     items.append(InstalledApplication(executable, path))
+        items = [item for item in items if not self._is_non_launch_entry(item.name, item.app_id)]
         self._cache = sorted(items, key=lambda item: item.name.lower())
         if self.cache_path:
             try:
@@ -185,7 +255,7 @@ class ApplicationService:
                     ]
                     target = next((path for path in candidates if str(path) and path.is_file()), None)
                     if target:
-                        subprocess.Popen([str(target)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                        subprocess.Popen([str(target)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, creationflags=_no_window_flags())
                         return {"name": "Telegram", "app_id": str(target), "platform": platform.system(), "fallback": "common_path"}
                 raise
         if os.name == "nt":
@@ -193,9 +263,10 @@ class ApplicationService:
                 ["explorer.exe", f"shell:AppsFolder\\{app.app_id}"],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
+                creationflags=_no_window_flags(),
             )
         else:
-            subprocess.Popen([app.app_id], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            subprocess.Popen([app.app_id], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, creationflags=_no_window_flags())
         return {"name": app.name, "app_id": app.app_id, "platform": platform.system()}
 
 
@@ -235,6 +306,7 @@ class ApplicationService:
             return subprocess.run(
                 [winget, *args], capture_output=True, text=True, encoding="utf-8",
                 errors="replace", timeout=timeout, shell=False,
+                creationflags=_no_window_flags(),
             )
 
         probe = run(["list", "--name", name, "--exact", "--accept-source-agreements", "--disable-interactivity"], 90)
@@ -277,6 +349,7 @@ class ApplicationService:
         if not wanted:
             raise ApplicationError("Не указано приложение")
         matched = []
+        targets = []
         current_pid = os.getpid()
         for proc in psutil.process_iter(["pid", "name", "exe", "cmdline", "username"]):
             try:
@@ -295,11 +368,14 @@ class ApplicationService:
                     continue
                 proc.terminate()
                 matched.append({"pid": proc.pid, "name": proc.info.get("name")})
+                targets.append(proc)
             except Exception:
                 continue
         if not matched:
             raise ApplicationError(f"Запущенное приложение «{query}» не найдено")
-        return {"closed": matched[:30], "count": len(matched)}
+        _, alive = psutil.wait_procs(targets, timeout=3.0)
+        return {"closed": matched[:30], "count": len(matched), "verified": not alive,
+                "remaining_pids": [proc.pid for proc in alive[:20]]}
 
     def close_browsers(self) -> dict[str, Any]:
         """Close ordinary browser processes without touching EIRVEN's hidden spatial browser."""
@@ -315,6 +391,7 @@ class ApplicationService:
         except Exception:
             pass
         closed = []
+        targets = []
         for proc in psutil.process_iter(["pid", "name", "cmdline"]):
             try:
                 name = str(proc.info.get("name") or "").casefold()
@@ -327,11 +404,14 @@ class ApplicationService:
                     continue
                 proc.terminate()
                 closed.append({"pid": proc.pid, "name": proc.info.get("name")})
+                targets.append(proc)
             except Exception:
                 continue
         if not closed:
             raise ApplicationError("Открытый пользовательский браузер не найден")
-        return {"closed": closed[:40], "count": len(closed)}
+        _, alive = psutil.wait_procs(targets, timeout=3.0)
+        return {"closed": closed[:40], "count": len(closed), "verified": not alive,
+                "remaining_pids": [proc.pid for proc in alive[:20]]}
 
     def close_user_apps(self) -> dict[str, Any]:
         """Close ordinary interactive apps while preserving Windows/EIRVEN processes.
@@ -345,7 +425,7 @@ class ApplicationService:
             import ctypes
             import psutil  # type: ignore
         except Exception as exc:
-            raise ApplicationError(f"Не удалось получить процессы Windows: {exc}") from exc
+            raise ApplicationError(f"Не удалось получить процессы Windows: {humanize(exc)}") from exc
         user32 = ctypes.windll.user32
         visible_pids: set[int] = set()
         WNDENUMPROC = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_void_p, ctypes.c_void_p)
@@ -371,6 +451,7 @@ class ApplicationService:
             "python.exe", "pythonw.exe", "eirven-ai.exe", "ollama.exe",
         }
         closed = []
+        targets = []
         for pid in sorted(visible_pids):
             try:
                 proc = psutil.Process(pid)
@@ -379,9 +460,12 @@ class ApplicationService:
                     continue
                 proc.terminate()
                 closed.append({"pid": pid, "name": proc.name()})
+                targets.append(proc)
             except Exception:
                 continue
-        return {"closed": closed[:80], "count": len(closed), "protected_system_processes": True}
+        _, alive = psutil.wait_procs(targets, timeout=3.0)
+        return {"closed": closed[:80], "count": len(closed), "protected_system_processes": True,
+                "verified": not alive, "remaining_pids": [proc.pid for proc in alive[:30]]}
 
 
     @staticmethod
@@ -430,16 +514,46 @@ class ApplicationService:
         clean = str(query or "").strip()
         if not clean:
             raise ApplicationError("Не указано приложение")
+        normalized = re.sub(r"[^a-zа-я0-9]+", " ", clean.casefold().replace("ё", "е")).strip()
+        # Short product names are unsafe for a search engine's first-result redirect:
+        # "макс" previously opened an unrelated help article and looked successful.
+        normalized = re.sub(r"^(?:в|через) браузер(?:е)?\s+", "", normalized)
+        canonical_sites: tuple[tuple[re.Pattern[str], tuple[str, str]], ...] = (
+            (re.compile(r"^(?:яндекс ед[ауые]|yandex (?:eda|eats)|yandex_eda)$", re.I), ("Яндекс Еда", "https://eda.yandex.ru/")),
+            (re.compile(r"^(?:вкусвилл|вкусвилла|vkusvill)$", re.I), ("ВкусВилл", "https://vkusvill.ru/")),
+            (re.compile(r"^(?:max|макс|мессенджер max|мессенджер макс)$", re.I), ("MAX", "https://web.max.ru/")),
+            (re.compile(r"^(?:kwork|кворк|биржа kwork|биржа кворк)$", re.I), ("Kwork", "https://kwork.ru/")),
+            (re.compile(r"^(?:telegram|телеграм|телеграмм|тг)$", re.I), ("Telegram", "https://web.telegram.org/")),
+            (re.compile(r"^(?:youtube|ютуб)$", re.I), ("YouTube", "https://www.youtube.com/")),
+            (re.compile(r"^(?:spotify|спотифай)$", re.I), ("Spotify", "https://open.spotify.com/")),
+            (re.compile(r"^(?:яндекс музыка|yandex music)$", re.I), ("Яндекс Музыка", "https://music.yandex.ru/")),
+            (re.compile(r"^(?:discord|дискорд)$", re.I), ("Discord", "https://discord.com/app")),
+            (re.compile(r"^(?:gmail|гугл почта)$", re.I), ("Gmail", "https://mail.google.com/")),
+        )
+        for pattern, (title, url) in canonical_sites:
+            if pattern.fullmatch(normalized):
+                if not open_system_url(url):
+                    raise ApplicationError(f"Windows не смогла открыть официальный сайт {title}")
+                return {
+                    "url": url,
+                    "query": clean,
+                    "fallback": "canonical_registry",
+                    "browser": "system_default",
+                    "title": title,
+                }
         search = f"{clean} официальный сайт web app"
         try:
-            result = self.browser.search_first_site(search, open_visible=True)
+            result = self.browser.search_first_site(
+                search, open_visible=True, prefer_service_entry=True,
+            )
             return {"url": str(result.get("url") or ""), "query": search, "fallback": "direct_site"}
-        except Exception:
-            # Google "I'm Feeling Lucky" redirects to the first result instead of
-            # leaving the owner on a search-results page.
-            url = f"https://www.google.com/search?btnI=1&q={quote_plus(search)}"
-            open_system_url(url)
-            return {"url": url, "query": search, "fallback": "first_result_redirect", "browser": "system_default"}
+        except Exception as exc:
+            # A named service authorizes resolving its official surface, not opening an
+            # arbitrary first search result.  Fail closed and let the reactive layer ask
+            # for a URL when the brand cannot be grounded to the registrable domain.
+            raise ApplicationError(
+                f"Не удалось подтвердить официальный сайт {clean}: {humanize(exc)}"
+            ) from exc
 
     @staticmethod
     def open_windows_search(query: str = "") -> dict[str, str]:
@@ -447,20 +561,22 @@ class ApplicationService:
         if os.name != "nt":
             raise ApplicationError("Поиск приложений доступен только в Windows")
         try:
-            import pyautogui
-            pyautogui.hotkey("win", "s")
+            if not send_virtual_keys(("win", "s")):
+                raise RuntimeError("Win+S injection failed")
             if query.strip():
                 import time
                 time.sleep(0.25)
                 try:
                     import pyperclip
                     pyperclip.copy(query)
-                    pyautogui.hotkey("ctrl", "v")
+                    if not send_virtual_keys(("ctrl", "v")):
+                        raise RuntimeError("Ctrl+V injection failed")
                 except Exception:
+                    import pyautogui
                     pyautogui.write(query, interval=0.01)
             return {"query": query, "opened": "windows_search"}
         except Exception as exc:
-            raise ApplicationError(f"Не удалось открыть поиск Windows: {exc}") from exc
+            raise ApplicationError(f"Не удалось открыть поиск Windows: {humanize(exc)}") from exc
 
     @staticmethod
     def open_file_search(query: str) -> dict[str, str]:
@@ -471,7 +587,7 @@ class ApplicationService:
         if os.name != "nt":
             raise ApplicationError("Системный поиск файлов доступен только в Windows")
         uri = f"search-ms:query={quote_plus(clean)}"
-        subprocess.Popen(["explorer.exe", uri], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        subprocess.Popen(["explorer.exe", uri], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, creationflags=_no_window_flags())
         return {"query": clean, "uri": uri, "opened": "explorer_search"}
 
     @staticmethod

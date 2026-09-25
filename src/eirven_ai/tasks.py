@@ -1,3 +1,8 @@
+# EIRVEN AI — 2.4.0
+# Copyright (c) 2026 Даниил Павлов. Все права защищены. / All rights reserved.
+# Лицензия: EIRVEN Non-Commercial License — см. файл LICENSE.
+# Обязательна видимая подпись «На базе Эрви». Скрывать её запрещено (см. LICENSE).
+# EIRVEN-LICENSE-HEADER
 from __future__ import annotations
 
 import json
@@ -85,7 +90,7 @@ class TaskManager:
     FAST_KINDS = frozenset({
         # Interactive computer work must never sit behind a long project generation.
         # The LLM arbiter still gives live chat priority over an agent step.
-        "application_launch", "identity_change", "crypto_price", "media_open",
+        "application_launch", "crypto_price", "media_open",
         "git_action", "agent", "screen_query",
     })
     # r19 missions have their own coordinators. Multiple missions may therefore keep
@@ -106,10 +111,43 @@ class TaskManager:
     def register(self, kind: str, handler: TaskHandler) -> None:
         self.handlers[kind] = handler
 
+    def _quarantine_orphaned_tasks(self) -> None:
+        """Stop tasks from a previous process from silently re-running at startup.
+
+        The workers pick up any row with status='queued'. A task interrupted by a
+        crash, a force-quit or an EXE restart is left in exactly that state, so it
+        would be re-executed on every subsequent launch even though nobody asked
+        for it again -- including destructive ones like closing every open app.
+        At this point in start() no worker is running yet, so anything still marked
+        queued/running can only be a leftover. Park it in waiting_user (an existing
+        status with a working resume path) instead of discarding the work.
+        """
+        try:
+            with self.db.connect() as conn:
+                cursor = conn.execute(
+                    """UPDATE tasks
+                       SET status='waiting_user',
+                           current_step='Прервана при прошлом выходе — нужно подтверждение, чтобы продолжить'
+                       WHERE status IN ('queued','running')"""
+                )
+                recovered = int(cursor.rowcount or 0)
+                conn.commit()
+            if recovered:
+                # Remember that work was interrupted so the assistant can offer to
+                # pick it up instead of the person having to notice on their own.
+                try:
+                    self.db.set_setting("tasks_interrupted_pending", recovered)
+                except Exception:
+                    pass
+        except Exception:
+            # Never let recovery bookkeeping stop the scheduler from starting.
+            pass
+
     def start(self) -> None:
         with self._lock:
             if self._workers:
                 return
+            self._quarantine_orphaned_tasks()
             self._shutdown.clear()
             fast = threading.Thread(
                 target=self._worker,
@@ -412,13 +450,33 @@ class TaskManager:
                 result = handler(context, task["input"])
                 context.check_cancelled()
                 elapsed = time.monotonic() - started
-                self._finish(task_id, "done", result or {}, "", elapsed)
-                self._event(
-                    task_id,
-                    "success",
-                    f"Задача завершена за {self._human_duration(elapsed)}",
-                    {},
-                )
+                payload = result or {}
+                state = "done"
+                if isinstance(payload, dict) and payload.get("verified") is False:
+                    state = "partial" if payload.get("completed") else "failed"
+                elif isinstance(payload, dict) and payload.get("ok") is False:
+                    state = "partial" if payload.get("completed") else "failed"
+                error = ""
+                if state != "done" and isinstance(payload, dict):
+                    error = str(payload.get("error") or payload.get("report") or "Постусловие не подтверждено")[:2000]
+                self._finish(task_id, state, payload, error, elapsed)
+                if state == "done":
+                    self._event(task_id, "success", f"Задача завершена за {self._human_duration(elapsed)}", {})
+                elif state == "partial":
+                    self._event(task_id, "warning", "Действие выполнено частично; постусловие не подтверждено", {})
+                    self._notify_conversation(
+                        task.get("conversation_id"),
+                        f"Задача «{task['title']}» завершена частично: действие не удалось подтвердить. Повтор автоматически не выполняю.",
+                        task_id, "partial",
+                    )
+                else:
+                    self._event(task_id, "error", "Задача не достигла проверяемого результата", {})
+                    self._notify_conversation(
+                        task.get("conversation_id"),
+                        f"Не получилось завершить задачу «{task['title']}»: {error or 'проверяемый результат не достигнут'}.",
+                        task_id,
+                        "failed",
+                    )
             except TaskNeedsUser as exc:
                 elapsed = time.monotonic() - started
                 with self.db.connect() as conn:
@@ -515,8 +573,8 @@ class TaskManager:
                 """,
                 (
                     status,
-                    1.0 if status == "done" else 0.0,
-                    "Готово" if status == "done" else ("Отменено" if status == "cancelled" else "Ошибка"),
+                    1.0 if status == "done" else (0.99 if status == "partial" else 0.0),
+                    "Завершено и проверено" if status == "done" else ("Завершено частично" if status == "partial" else ("Отменено" if status == "cancelled" else "Ошибка")),
                     encoded,
                     error,
                     utc_now(),

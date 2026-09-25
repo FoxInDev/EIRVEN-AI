@@ -1,3 +1,8 @@
+# EIRVEN AI — 2.4.0
+# Copyright (c) 2026 Даниил Павлов. Все права защищены. / All rights reserved.
+# Лицензия: EIRVEN Non-Commercial License — см. файл LICENSE.
+# Обязательна видимая подпись «На базе Эрви». Скрывать её запрещено (см. LICENSE).
+# EIRVEN-LICENSE-HEADER
 from __future__ import annotations
 
 import argparse
@@ -16,12 +21,12 @@ os.environ.setdefault("CUDA_VISIBLE_DEVICES", "-1")
 os.environ.setdefault("CT2_USE_EXPERIMENTAL_PACKED_GEMM", "0")
 
 RUSSIAN_PROMPT = (
-    "Русская естественная разговорная речь. EIRVEN, Эйрвен, Windows, Telegram, телеграм, "
-    "YouTube, ютуб, GitHub, Git, Docker, Python, PowerShell, VS Code, Ollama, Москва, погода. "
+    "Русская естественная разговорная речь. EIRVEN, Эрви, Windows, Telegram, телеграм, "
+    "YouTube, ютуб, Git, Docker, Python, PowerShell, VS Code, Ollama, Москва, погода. "
     "Точно сохраняй вопросительные слова, названия программ и команды."
 )
 HOTWORDS = (
-    "EIRVEN Эйрвен Telegram телеграм YouTube ютуб GitHub Docker Python "
+    "EIRVEN Эрви Telegram телеграм YouTube ютуб Docker Python "
     "PowerShell Windows Ollama Москва погода"
 )
 
@@ -30,6 +35,33 @@ def emit(payload: dict[str, Any]) -> None:
     sys.stdout.write(json.dumps(payload, ensure_ascii=True) + "\n")
     sys.stdout.flush()
 
+
+
+def _local_first(load):
+    """Загрузить модель сначала ТОЛЬКО с диска, в сеть — лишь если её там нет.
+
+    Модели распознавания грузятся по имени через Hugging Face, а библиотека по
+    умолчанию сначала идёт в интернет проверить, нет ли новой версии, — даже когда
+    модель давно скачана. Без интернета это ожидание соединения по каждому файлу
+    или ошибка: микрофон не поднимался, и Эрви «без интернета не работала». А это
+    как раз проверка, которую мы предлагаем людям: отключи сеть — она работает.
+    Функции библиотеки читают HF_HUB_OFFLINE при каждом вызове, поэтому режим
+    можно включить на время загрузки и вернуть как было.
+    """
+    try:
+        import huggingface_hub.constants as hub_constants
+    except Exception:
+        return load()
+    previous = hub_constants.HF_HUB_OFFLINE
+    hub_constants.HF_HUB_OFFLINE = True
+    try:
+        return load()
+    except Exception:
+        # Модели ещё нет на диске — это первая установка: скачиваем как раньше.
+        hub_constants.HF_HUB_OFFLINE = previous
+        return load()
+    finally:
+        hub_constants.HF_HUB_OFFLINE = previous
 
 class Recognizer:
     def __init__(self, engine: str, gigaam_model: str, whisper_model: str):
@@ -49,10 +81,10 @@ class Recognizer:
 
             # INT8 is the right default for an older CPU. onnx-asr performs WAV
             # reading and resampling itself, so the browser can send raw PCM WAV.
-            self.gigaam = onnx_asr.load_model(
+            self.gigaam = _local_first(lambda: onnx_asr.load_model(
                 self.gigaam_model_name,
                 quantization="int8",
-            )
+            ))
             return self.gigaam
         except Exception as exc:
             self.gigaam_error = str(exc)
@@ -64,7 +96,7 @@ class Recognizer:
         try:
             from faster_whisper import WhisperModel
 
-            self.whisper = WhisperModel(self.whisper_model_name, device="cpu", compute_type="int8")
+            self.whisper = _local_first(lambda: WhisperModel(self.whisper_model_name, device="cpu", compute_type="int8"))
             return self.whisper
         except Exception as exc:
             self.whisper_error = str(exc)
@@ -134,17 +166,26 @@ class Recognizer:
             segments, _info = model.transcribe(path, **preferred)
         return " ".join(s.text.strip() for s in segments if s.text.strip()).strip()
 
-    def transcribe(self, path: str) -> tuple[str, str, str]:
+    def transcribe(self, path: str, *, allow_fallback: bool = True) -> tuple[str, str, str]:
         errors: list[str] = []
         if self.requested_engine in {"gigaam", "auto"}:
             try:
                 text = self._gigaam_transcribe(path)
                 if text and self._plausible_ru(text):
                     return text, "gigaam", ""
+                if not text:
+                    # Silence/noise is a valid empty recognition, not a reason to load
+                    # the multi-gigabyte Whisper fallback.
+                    return "", "gigaam", ""
                 if text:
                     errors.append(f"GigaAM suspicious transcript: {text[:120]}")
             except Exception as exc:
                 errors.append(f"GigaAM: {exc}")
+        if not allow_fallback:
+            # Always-on capture over loud playback is adversarial input, not a reason to
+            # cold-load the multi-gigabyte Whisper fallback. GigaAM still recognizes the
+            # explicit Russian wake phrase; uncertain speaker audio is discarded quickly.
+            return "", "gigaam", " | ".join(errors)
         # Whisper is intentionally a fallback for mixed-language/technical speech
         # and for machines where the ONNX model was not downloaded yet.
         try:
@@ -191,6 +232,23 @@ def main() -> int:
                     recognizer._load_whisper()
                     emit({"id": request_id, "ok": True, "engine": "whisper"})
                 continue
+            if command == "prime_primary":
+                # Run the primary graph once but treat an empty/silent transcript as a
+                # successful inference probe. Calling the normal fallback policy here
+                # loaded the 3.8 GB Whisper model merely because silence has no text.
+                audio = base64.b64decode(str(request.get("audio_b64") or ""), validate=True)
+                with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as temp:
+                    temp.write(audio)
+                    path = temp.name
+                cleanup = Path(path)
+                if recognizer.requested_engine in {"gigaam", "auto"}:
+                    recognizer._gigaam_transcribe(path)
+                    primary_engine = "gigaam"
+                else:
+                    recognizer._whisper_transcribe(path)
+                    primary_engine = "whisper"
+                emit({"id": request_id, "ok": True, "engine": primary_engine, "primed": True})
+                continue
             if command == "transcribe_bytes":
                 audio = base64.b64decode(str(request.get("audio_b64") or ""), validate=True)
                 suffix = str(request.get("suffix") or ".wav")
@@ -206,7 +264,9 @@ def main() -> int:
                 emit({"id": request_id, "ok": False, "error": "unknown command"})
                 continue
 
-            text, engine, fallback_reason = recognizer.transcribe(path)
+            text, engine, fallback_reason = recognizer.transcribe(
+                path, allow_fallback=bool(request.get("allow_fallback", True)),
+            )
             emit({
                 "id": request_id,
                 "ok": True,

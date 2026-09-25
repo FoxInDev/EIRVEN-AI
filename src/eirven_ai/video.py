@@ -1,3 +1,8 @@
+# EIRVEN AI — 2.4.0
+# Copyright (c) 2026 Даниил Павлов. Все права защищены. / All rights reserved.
+# Лицензия: EIRVEN Non-Commercial License — см. файл LICENSE.
+# Обязательна видимая подпись «На базе Эрви». Скрывать её запрещено (см. LICENSE).
+# EIRVEN-LICENSE-HEADER
 from __future__ import annotations
 
 import json
@@ -12,6 +17,21 @@ import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+
+from .human_errors import humanize
+
+
+def _video_no_window_flags() -> int:
+    """Hide the console window for ffmpeg/ffprobe helpers on Windows.
+
+    Video work spawns long-running encoder processes; without this each one puts a
+    console window on top of whatever the user is doing for the whole encode.
+    """
+    if os.name != "nt":
+        return 0
+    return getattr(subprocess, "CREATE_NO_WINDOW", 0)
+
+
 
 
 VIDEO_EXTENSIONS = {
@@ -54,7 +74,7 @@ class VideoEditor:
     _EDIT_RE = re.compile(
         r"\b(?:с?монт\w*|монтаж\w*|скле\w*|соедин\w*|объедин\w*|обре[зж]\w*|отре[зж]\w*|"
         r"выреж\w*|кадрир\w*|ролик\w*|видеофайл\w*|улучш\w*\s+качество|увелич\w*\s+"
-        r"качество|разрешени\w*|1080p|720p|4k|2k|ускор\w*|замедл\w*|стабилиз\w*|"
+        r"качество|разрешени\w*|1080p|720p|4k|2k|4к|2к|ускор\w*|замедл\w*|стабилиз\w*|"
         r"цветокор\w*|яркост\w*|насыщенн\w*|конверт\w*|формат\w*\s+видео|убер\w*\s+"
         r"звук|без\s+звука|извлек\w*\s+(?:звук|аудио)|налож\w*\s+текст|добав\w*\s+"
         r"текст|субтитр\w*|плавн\w*\s+(?:появ|затух)|переход\w*|поверн\w*\s+видео|вертикальн\w*\s+"
@@ -365,7 +385,7 @@ class VideoEditor:
     @staticmethod
     def _clean_query(query: str) -> str:
         clean = " ".join(str(query or "").casefold().replace("ё", "е").split())
-        return re.sub(r"^(?:эрви|эйрвен|еирвен|eirven)[,;:!\-\s]*", "", clean, count=1, flags=re.I).strip()
+        return re.sub(r"^(?:эрви|эрви|еирвен|eirven)[,;:!\-\s]*", "", clean, count=1, flags=re.I).strip()
 
     def _remember_context(self, conversation_id: str) -> None:
         if conversation_id:
@@ -377,9 +397,22 @@ class VideoEditor:
 
     def is_relevant(self, query: str, conversation_id: str = "") -> bool:
         clean = self._clean_query(query)
+        # ``яркость до N%`` without any video context is a monitor command.  Do not
+        # open the video inbox or emit the misleading "положи файлы" prompt for it.
+        screen_brightness_only = bool(
+            re.search(r"\bяркост\w*\b", clean, re.I)
+            and re.search(r"\b(?:до|на)\s*\d{1,3}\s*(?:%|процент\w*)?\b", clean, re.I)
+            and not re.search(r"\b(?:видео|ролик|клип|кадр|фильм|монтаж)\w*\b", clean, re.I)
+        )
         with self._lock:
             pending = self._state.get("pending") or {}
             active = self._state.get("active") or {}
+            if screen_brightness_only and not (
+                (conversation_id and conversation_id in pending)
+                or (conversation_id and active.get("conversation_id") == conversation_id)
+                or self._has_recent_context(conversation_id)
+            ):
+                return False
             if conversation_id and conversation_id in pending:
                 return True
             if self._is_acceptance(clean, active if isinstance(active, dict) else None, conversation_id):
@@ -780,7 +813,7 @@ class VideoEditor:
                 })
             except Exception as exc:
                 original = self._last_original_names.get(str(path.resolve()), path.name)
-                failures.append(f"{original}: {exc}")
+                failures.append(f"{original}: {humanize(exc)}")
         if failures:
             restore_files = (
                 [path for path in normalized if str(path.resolve()) not in active_paths]
@@ -1708,7 +1741,7 @@ class VideoEditor:
         shutil.move(str(source), str(destination))
 
     def _run_process(self, args: list[str], context: Any) -> None:
-        process = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8", errors="replace")
+        process = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8", errors="replace", creationflags=_video_no_window_flags())
         while True:
             try:
                 stdout, stderr = process.communicate(timeout=.25)

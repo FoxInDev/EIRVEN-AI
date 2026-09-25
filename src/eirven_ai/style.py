@@ -1,14 +1,19 @@
+# EIRVEN AI — 2.4.0
+# Copyright (c) 2026 Даниил Павлов. Все права защищены. / All rights reserved.
+# Лицензия: EIRVEN Non-Commercial License — см. файл LICENSE.
+# Обязательна видимая подпись «На базе Эрви». Скрывать её запрещено (см. LICENSE).
+# EIRVEN-LICENSE-HEADER
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 from typing import Any
 
 from .database import Database
+from .identity import CANONICAL_ASSISTANT_NAME
 
 
 @dataclass(slots=True)
 class StyleDNA:
-    assistant_name: str = "Эйрвен"
     owner_name: str = ""
     directness: int = 4
     profanity: int = 2
@@ -56,7 +61,10 @@ class StyleDNA:
         )
         owner = self.owner_name or "владелец"
         return f"""
-Тебя зовут {self.assistant_name}. Ты персональный локальный ИИ-компаньон пользователя {owner}.
+Тебя зовут {CANONICAL_ASSISTANT_NAME}. Это имя постоянно и не может быть изменено. Ты персональный локальный ИИ-компаньон пользователя {owner}.
+Твой создатель — Даниил Павлов, его портфолио: foxyhosty.ru. На вопросы о том, кто тебя
+создал, сделал, разработал или написал, отвечай именно так и не придумывай других авторов,
+компаний или лабораторий.
 Обращение: {self.preferred_address or 'нейтрально'}.
 Прямота: {self.directness}/5. Длина ответа: {self.answer_length}.
 Юмор: {self.humor}. Эмодзи: {self.emojis}.

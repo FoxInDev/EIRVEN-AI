@@ -1,3 +1,8 @@
+# EIRVEN AI — 2.4.0
+# Copyright (c) 2026 Даниил Павлов. Все права защищены. / All rights reserved.
+# Лицензия: EIRVEN Non-Commercial License — см. файл LICENSE.
+# Обязательна видимая подпись «На базе Эрви». Скрывать её запрещено (см. LICENSE).
+# EIRVEN-LICENSE-HEADER
 from __future__ import annotations
 
 import json
@@ -58,14 +63,14 @@ class MissionEngine:
     # tense words inside message text ("что включил музыку") never become new nodes.
     _ACTION = re.compile(
         r"\b(откро|зайд|запуст|перейд|найд|отыщ|добав|полож|отправ|ответ|напиш|"
-        r"посмотр|проверь|прочита|скача|сохран|закро|заверш|включ|вруб|воспроизвед|выключ|постав|продолж|увелич|уменьш|игра)\w*",
+        r"посмотр|проверь|прочита|обработ|скача|сохран|закро|заверш|включ|вруб|воспроизвед|выключ|постав|продолж|увелич|уменьш|игра)\w*",
         re.I,
     )
     _ACTION_TOKEN = re.compile(
         r"\b(?:открой(?:те)?|зайди(?:те)?|запусти(?:те)?|перейди(?:те)?|"
         r"найди(?:те)?|отыщи(?:те)?|добавь(?:те)?|положи(?:те)?|отправь(?:те)?|"
         r"ответь(?:те)?|напиши(?:те)?|скачай(?:те)?|сохрани(?:те)?|закрой(?:те)?|"
-        r"посмотри(?:те)?|проверь(?:те)?|прочитай(?:те)?|"
+        r"посмотри(?:те)?|проверь(?:те)?|прочитай(?:те)?|обработай(?:те)?|"
         r"заверши(?:те)?|включи(?:те)?|вруби(?:те)?|воспроизведи(?:те)?|выключи(?:те)?|поставь(?:те)?|"
         r"продолжи(?:те)?|увеличь(?:те)?|уменьши(?:те)?|играй(?:те)?)\b", re.I,
     )
@@ -80,7 +85,7 @@ class MissionEngine:
         ("telegram", re.compile(r"\b(?:telegram|телеграм\w*|телегр\w*|телег\w*|тг|избранн\w*|saved messages)\b", re.I)),
         ("mesh", re.compile(r"\b(?:м[эе]ш|mesh|дневник\s+м[эе]ш|московск\w*\s+электронн\w*\s+школ)\b", re.I)),
         ("yandex_music", re.compile(r"\b(яндекс\s*музык\w*|yandex\s*music|моя\s+волна|трек|альбом)\b", re.I)),
-        ("browser", re.compile(r"\b(сайт|страниц|браузер|каталог|корзин|товар|магазин)\w*", re.I)),
+        ("browser", re.compile(r"\b(сайт|страниц|браузер|каталог|корзин|товар|магазин|кворк|kwork|бирж|заказ)\w*", re.I)),
         ("files", re.compile(r"\b(файл|папк|проводник|explorer|директор)\w*", re.I)),
         ("system", re.compile(r"\b(системн\w*|windows|процесс\w*|громкост|звук)\b", re.I)),
     )
@@ -468,7 +473,8 @@ class MissionEngine:
         preferred = [
             getattr(self.services.settings, "action_model", ""),
             getattr(self.services.settings, "fast_model", ""),
-            "qwen3:1.7b",
+            getattr(self.services.settings, "model", ""),
+            "deepseek-coder-v2:16b-lite-instruct-q4_k_m",
         ]
         model = next((m for p in preferred if p for m in installed if str(m).casefold() == str(p).casefold()), "")
         if not model:
@@ -694,23 +700,20 @@ class MissionEngine:
             "error": "" if completed else str(result.get("error") or answer or "Telegram message failed"),
         }
 
-    def _media_node(self, node: MissionNode, stop_event: threading.Event) -> dict[str, Any]:
-        if node.app == "yandex_music":
-            skills = getattr(self.services, "app_skills", None)
-            try:
-                result = dict(skills.play_music() or {}) if skills is not None else {}
-            except Exception as exc:
-                result = {"ok": False, "verified": False, "error": str(exc)}
-            if result:
-                return {"ok": bool(result.get("ok")), "completed": bool(result.get("ok")),
-                        "verified": bool(result.get("verified")), **result}
+    def _media_node(
+        self, node: MissionNode, stop_event: threading.Event, mission_id: str,
+    ) -> dict[str, Any]:
+        # A named provider or content goal needs the same generic reactive surface binding
+        # as an ordinary turn.  Never let a legacy Yandex-first adapter steal the node.
+        if node.app or re.search(r"\b(?:в|во|на|через)\s+\S+", node.goal, re.I):
+            return self._ui_node(node, mission_id, stop_event)
         workflow = getattr(self.services, "universal_workflow", None)
         ensure = getattr(workflow, "ensure_media_goal", None)
         if not callable(ensure):
             return {"ok": False, "verified": False, "error": "Media state lane unavailable"}
         result = ensure(node.goal, allow_implicit=True, stop_event=stop_event)
         if not isinstance(result, dict):
-            return {"ok": False, "verified": False, "error": "Current surface is not recognized as media"}
+            return self._ui_node(node, mission_id, stop_event)
         return dict(result)
 
     def _open_target(self, node: MissionNode) -> dict[str, Any]:
@@ -898,6 +901,7 @@ class MissionEngine:
         replied: set[str] = set()
         skipped: set[str] = set()
         outcomes: list[dict[str, Any]] = []
+        retry_counts: dict[str, int] = {}
         scroll_pages = 0
         stagnant_pages = 0
         previous_page = ""
@@ -967,12 +971,28 @@ class MissionEngine:
             completed = bool(route.get("completed") or inner.get("completed") or route.get("action") == "telegram_style_reply")
             verified = bool(route.get("verified") or inner.get("verified"))
             outcomes.append({"recipient": recipient, "answer": answer, "completed": completed, "verified": verified})
-            replied.add(key)
             if stop_event.is_set():
                 return {"ok": False, "verified": False, "error": "cancelled", "replied": sorted(replied), "outcomes": outcomes}
+            if completed and verified:
+                replied.add(key)
+                retry_counts.pop(key, None)
+                back_to_list()
+                continue
             if completed and not verified:
-                return {"ok": False, "completed": True, "verified": False, "error": f"Ответ {recipient} отправлен один раз, но не подтверждён; повтор заблокирован", "outcomes": outcomes}
+                # A commit may already have reached Telegram. Never duplicate an
+                # unverified outgoing message just to satisfy a retry loop.
+                return {"ok": False, "completed": True, "verified": False, "error": f"Ответ {recipient} мог быть отправлен, но подтверждение не получено; повтор заблокирован от дубля", "outcomes": outcomes}
+            # A pre-commit/transient failure is safe to retry. Do not mark the chat as
+            # replied merely because one attempt failed while Telegram was loading.
+            retry_counts[key] = retry_counts.get(key, 0) + 1
             back_to_list()
+            if retry_counts[key] >= 4:
+                skipped.add(key)
+                self._trace("R56_TG_RETRY_EXHAUSTED", recipient=recipient, attempts=retry_counts[key])
+            else:
+                self._trace("R56_TG_RETRY_PENDING", recipient=recipient, attempt=retry_counts[key])
+                if stop_event.wait(min(2.0, .45 * retry_counts[key])):
+                    return {"ok": False, "verified": False, "error": "cancelled", "replied": sorted(replied), "outcomes": outcomes}
         verified = bool(collection_exhausted)
         return {
             "ok": verified, "completed": bool(outcomes), "verified": verified,
@@ -1081,7 +1101,7 @@ class MissionEngine:
                 return self._telegram_message(node, mission)
         if node.kind == "media":
             with self._desktop_lock:
-                return self._media_node(node, stop_event)
+                return self._media_node(node, stop_event, str(mission.get("id") or "mission"))
         if node.kind == "open_target":
             with self._desktop_lock:
                 return self._open_target(node)

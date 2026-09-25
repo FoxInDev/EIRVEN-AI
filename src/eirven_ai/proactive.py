@@ -1,3 +1,8 @@
+# EIRVEN AI — 2.4.0
+# Copyright (c) 2026 Даниил Павлов. Все права защищены. / All rights reserved.
+# Лицензия: EIRVEN Non-Commercial License — см. файл LICENSE.
+# Обязательна видимая подпись «На базе Эрви». Скрывать её запрещено (см. LICENSE).
+# EIRVEN-LICENSE-HEADER
 from __future__ import annotations
 
 import os
@@ -50,6 +55,7 @@ class ProactiveObserver:
         self.tools = tools
         self.services_provider = services_provider
         self._stop = threading.Event()
+        self._paused = threading.Event()
         self._thread: threading.Thread | None = None
         self._media_key = ""
         self._media_since = 0.0
@@ -66,6 +72,8 @@ class ProactiveObserver:
         self._window_since = 0.0
         self._last_comment_signature = ""
         self._comment_cooldown_until = 0.0
+        self._idle_offered = False
+        self._resume_offered = False
 
     def _trace(self, event: str, **payload: Any) -> None:
         try:
@@ -86,6 +94,24 @@ class ProactiveObserver:
         if self._thread and self._thread is not threading.current_thread():
             self._thread.join(timeout=1.5)
         self._thread = None
+
+    def pause(self, reason: str = "owner_stop") -> None:
+        """Suspend all foreground/UIA observation without terminating the daemon."""
+        self._paused.set()
+        self._media_key = ""
+        self._media_since = 0.0
+        self._trace("PROACTIVE_PAUSE", reason=str(reason or "owner_stop")[:80])
+
+    def resume(self, reason: str = "owner_turn") -> None:
+        """Resume only when a new owner turn explicitly reopens the command lane."""
+        was_paused = self._paused.is_set()
+        self._paused.clear()
+        self._last_context_scan = time.monotonic()
+        if was_paused:
+            self._trace("PROACTIVE_RESUME", reason=str(reason or "owner_turn")[:80])
+
+    def paused(self) -> bool:
+        return self._paused.is_set()
 
     @staticmethod
     def _foreground() -> dict[str, Any]:
@@ -121,6 +147,37 @@ class ProactiveObserver:
             if pattern.search(title or ""):
                 return key
         return ""
+
+    def _idle_seconds(self) -> float:
+        """Seconds since the last real keyboard or mouse input.
+
+        Uses the OS-level GetLastInputInfo rather than sampling devices, so it costs
+        nothing per tick and does not record what was typed. Returns 0.0 where the
+        signal is unavailable, which disables idle handling instead of guessing.
+        """
+        if os.name != "nt":
+            return 0.0
+        try:
+            import ctypes
+
+            class _LastInput(ctypes.Structure):
+                _fields_ = [("cbSize", ctypes.c_uint), ("dwTime", ctypes.c_uint)]
+
+            info = _LastInput()
+            info.cbSize = ctypes.sizeof(_LastInput)
+            if not ctypes.windll.user32.GetLastInputInfo(ctypes.byref(info)):
+                return 0.0
+            millis = ctypes.windll.kernel32.GetTickCount() - info.dwTime
+            return max(0.0, millis / 1000.0)
+        except Exception:
+            return 0.0
+
+    def _idle_threshold_seconds(self) -> int:
+        try:
+            minutes = int(self.db.get_setting("proactive_idle_minutes", 12) or 12)
+        except Exception:
+            minutes = 12
+        return max(2, min(180, minutes)) * 60
 
     def _threshold_seconds(self) -> int:
         try:
@@ -161,6 +218,16 @@ class ProactiveObserver:
             )
         except Exception:
             pass
+        # A proactive hint is visible by default.  Speaking over a lesson, call or
+        # colleague is surprising and can disclose private context, so voice is an
+        # explicit opt-in.  The companion bubble remains the always-visible indicator
+        # that observation is active; there is no covert mode.
+        # Голос по умолчанию: подсказка, которую человек не заметил на экране,
+        # бесполезна. Отключается тем же переключателем в настройках.
+        output_mode = str(self.db.get_setting("proactive_output_mode", "voice") or "voice").casefold()
+        if output_mode != "voice":
+            self._trace("PROACTIVE_VISIBLE_ONLY", text=clean[:120], emotion=emotion)
+            return
         daemon = self.voice_daemon_provider()
         if daemon is None:
             return
@@ -219,7 +286,7 @@ class ProactiveObserver:
                 "required": ["speak", "text", "emotion", "confidence", "reason"],
             }
             prompt = (
-                "Ты проактивная живая Эйрвен. Реши, стоит ли СЕЙЧАС самой произнести одну короткую реплику по реально видимому контексту. "
+                "Ты проактивная живая Эрви. Реши, стоит ли СЕЙЧАС самой произнести одну короткую реплику по реально видимому контексту. "
                 "По умолчанию speak=false. speak=true только если замечание конкретное и полезное: виден более лёгкий путь, явная ошибка/зависание, "
                 "уместная мягкая шутка, риск, или человеку явно нужна поддержка. Не пересказывай экран, не комментируй каждое действие, не оценивай и не оскорбляй людей, "
                 "не выдумывай скрытое и не давай команд без причины. Текст — максимум одно естественное предложение, без префиксов и канцелярита.\n"
@@ -228,7 +295,8 @@ class ProactiveObserver:
             data = gateway.json(
                 [{"role": "user", "content": prompt}],
                 model=str(settings.fast_model), temperature=0.25, schema=schema,
-                num_ctx=1300, num_predict=120, keep_alive="45s", timeout_seconds=4.2,
+                num_ctx=1300, num_predict=120,
+                keep_alive=settings.keep_alive, timeout_seconds=4.2,
             )
             confidence = float(data.get("confidence") or 0) if isinstance(data, dict) else 0.0
             text = re.sub(r"\s+", " ", str((data or {}).get("text") or "")).strip()[:190]
@@ -266,7 +334,16 @@ class ProactiveObserver:
         return str(title or "приложение").split(" - ")[-1][:80]
 
     def _sample_visible_context(self, info: dict[str, Any], now: float) -> None:
-        if now - self._last_context_scan < 5.0:
+        # Full UIA enumeration is a scarce serialized desktop resource.  Never compete
+        # with a user-owned task lease, and sample idle context at low frequency.
+        try:
+            active_services = self.services_provider() if callable(self.services_provider) else None
+            runtime = getattr(active_services, "runtime", None) if active_services is not None else None
+            if runtime is not None and bool(runtime.status().get("cancellable")):
+                return
+        except Exception:
+            active_services = None
+        if now - self._last_context_scan < 30.0:
             return
         self._last_context_scan = now
         if not bool(self.db.get_setting("desktop_comments_enabled", True)):
@@ -276,7 +353,7 @@ class ProactiveObserver:
         if not title or not handle:
             return
         try:
-            services = self.services_provider() if callable(self.services_provider) else None
+            services = active_services or (self.services_provider() if callable(self.services_provider) else None)
             cognition = getattr(services, "cognition", None) if services is not None else None
             allowed, reason = cognition.proactivity_allowed(title, "") if cognition is not None else (True, "")
             if not allowed:
@@ -309,7 +386,7 @@ class ProactiveObserver:
         self._hung_handle, self._hung_since = 0, 0.0
 
         try:
-            rows = self.tools.execute("window_elements", {"title_contains": title, "handle": handle, "max_elements": 240})
+            rows = self.tools.execute("window_elements", {"title_contains": title, "handle": handle, "max_elements": 80})
             elements = list(rows.get("result") or []) if rows.get("ok") else []
             visible_names = []
             for row in elements:
@@ -345,6 +422,8 @@ class ProactiveObserver:
         # One-second foreground sampling is cheap enough to feel immediate without
         # recording screenshots or generating background model traffic.
         while not self._stop.wait(1.0):
+            if self._paused.is_set():
+                continue
             if not bool(self.db.get_setting("proactive_enabled", True)):
                 if self._media_key:
                     self._trace("PROACTIVE_RESET", reason="disabled", media=self._media_key)
@@ -370,6 +449,45 @@ class ProactiveObserver:
                 self._media_key = ""
                 self._media_since = 0.0
                 self._last_trace_bucket = -1
+                # Nobody is watching anything, but they may also have stopped working.
+                # Offer once per idle stretch; the flag clears as soon as real input
+                # returns, so coming back and pausing again can offer again later.
+                idle = self._idle_seconds()
+                if idle < 30.0:
+                    self._idle_offered = False
+                    # Right after a restart, mention work that was cut off. Once, and
+                    # only when the person is actually at the computer.
+                    if not getattr(self, "_resume_offered", False):
+                        try:
+                            pending = int(self.db.get_setting("tasks_interrupted_pending", 0) or 0)
+                        except Exception:
+                            pending = 0
+                        if pending > 0:
+                            self._resume_offered = True
+                            try:
+                                self.db.set_setting("tasks_interrupted_pending", 0)
+                            except Exception:
+                                pass
+                            self._last_intervention = now
+                            self._trace("PROACTIVE_RESUME_OFFER", tasks=pending)
+                            word = "задача" if pending == 1 else "задачи"
+                            self._say(
+                                f"В прошлый раз {pending} {word} прервались на середине. "
+                                "Скажи «продолжи», и я вернусь к ним.",
+                                "warm",
+                            )
+                elif not getattr(self, "_idle_offered", False) and idle >= self._idle_threshold_seconds():
+                    self._idle_offered = True
+                    self._last_intervention = now
+                    self._trace(
+                        "PROACTIVE_IDLE", idle_seconds=round(idle, 1),
+                        threshold_seconds=self._idle_threshold_seconds(), title=title[:180],
+                    )
+                    app = self._friendly_app_name(title)
+                    if app:
+                        self._say(f"Ты давно ничего не делаешь в «{app}». Вернёмся к работе или помочь с чем-то?", "warm")
+                    else:
+                        self._say("Ты давно не за компьютером. Вернёмся к работе или помочь с чем-то?", "warm")
                 continue
 
             if media_key != self._media_key:

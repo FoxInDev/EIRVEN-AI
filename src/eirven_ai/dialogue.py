@@ -1,15 +1,21 @@
+# EIRVEN AI — 2.4.0
+# Copyright (c) 2026 Даниил Павлов. Все права защищены. / All rights reserved.
+# Лицензия: EIRVEN Non-Commercial License — см. файл LICENSE.
+# Обязательна видимая подпись «На базе Эрви». Скрывать её запрещено (см. LICENSE).
+# EIRVEN-LICENSE-HEADER
 from __future__ import annotations
 
 import re
 
 
 _WAKE_WORDS = {
-    "eirven", "eirwen", "эрви", "эйрви", "эйрвен", "эйрвэн", "эрвен", "ирвен",
+    "eirven", "eirwen", "эрви", "эйрви", "эрви", "эйрвэн", "эрвен", "ирвен",
 }
 _POLITE_WORDS = {
     "пожалуйста", "плиз", "прошу", "слушай", "слышишь", "ну", "эй", "ладно",
 }
 _RESUME_WORDS = {
+    "да",
     "готов", "готова", "готово", "сделал", "сделала", "сделано", "вошел", "вошла",
     "авторизовался", "авторизовалась", "авторизация", "продолжай", "продолжи",
     "продолжить", "возобнови", "возобновить", "дальше", "далее", "можно", "давай", "закончил", "закончила",
@@ -70,7 +76,13 @@ def is_affirmative_confirmation(text: str) -> bool:
     accepted = {
         "да", "подтверждаю", "подтвердить", "выключай", "выключи", "завершай",
         "заверши", "работу", "компьютер", "пк", "ноутбук", "можно", "согласен",
-        "согласна", "точно",
+        "согласна", "точно", "продолжай", "продолжи", "продолжить",
+        "отправляй", "отправь", "отправить", "скидывай", "скинь",
+        # A reversible preflight may ask for a separate "да, открой" consent
+        # before an irreversible action (for example, opening Telegram before
+        # the final message send).  Keep it within the same strict affirmative
+        # grammar instead of adding a route-specific parser.
+        "открой", "открыть", "открывай", "запусти", "запустить", "запускай",
     }
     return bool(set(words).intersection({"да", "подтверждаю", "выключай", "завершай", "точно"})) and all(
         word in accepted for word in words
@@ -96,7 +108,13 @@ def is_pc_shutdown_request(text: str) -> bool:
         or "не надо" in clean
         or re.search(r"\bне\s+(?:выключ|выруб|отключ|заверш|погас)\w*\b", clean)
     )
-    return machine and shutdown and not cancel
+    # "Выключись." on its own names no object at all. The guards above already
+    # rejected self-reference (себя/тебя/ассистент/агент) and every other device,
+    # so a short imperative with nothing left to point at can only mean the
+    # computer -- matching nothing here sent it to the general agent, which has no
+    # access to system_power and could only reply with words.
+    implicit_machine = not machine and len(words) <= 4
+    return (machine or implicit_machine) and shutdown and not cancel
 
 
 def is_pc_shutdown_cancel_request(text: str) -> bool:

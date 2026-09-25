@@ -1,8 +1,15 @@
+# EIRVEN AI — 2.4.0
+# Copyright (c) 2026 Даниил Павлов. Все права защищены. / All rights reserved.
+# Лицензия: EIRVEN Non-Commercial License — см. файл LICENSE.
+# Обязательна видимая подпись «На базе Эрви». Скрывать её запрещено (см. LICENSE).
+# EIRVEN-LICENSE-HEADER
 from __future__ import annotations
 
 import json
+import hashlib
 import threading
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from .agent import LocalAgent
@@ -19,6 +26,7 @@ from .identity import IdentityService
 from .llm import ModelGateway
 from .game import GamePilot
 from .memory import MemoryStore
+from .mail_service import MailService
 from .model_router import ModelRouter
 from .orchestrator import IntentRouter
 from .projects import ProjectBuilder
@@ -32,11 +40,15 @@ from .voice_daemon import NativeVoiceDaemon
 from .system_browser import open_url as open_system_url
 from .modes import ModeController
 from .proactive import ProactiveObserver
-from .ambient import AmbientMusic
 from .runtime_control import RuntimeControl
 from .capabilities import CapabilityRegistry
 from .offline_cache import OfflineCache
 from .interface_learning import InterfaceLearning
+from .teaching import TeachingSession
+from .food import FoodService
+from .open_service import OpenService
+from .router import RequestRouter
+from .bridge import ConversationBridge
 from .desktop_operator import DesktopOperator
 from .app_skills import AppSkills
 from .selftest import StartupSelfTest
@@ -48,6 +60,10 @@ from .autonomous_workflow import AutonomousWorkflowEngine
 from .mission_engine import MissionEngine
 from .cognition import AgentCognition
 from .video import VideoEditor
+from .camera import CameraService
+from .phone_sync import PhoneSyncService
+from .updater import UpdateManager
+from .version import APP_BUILD, APP_VERSION
 
 
 TELEGRAM_RULE_SCHEMA: dict[str, Any] = {
@@ -58,6 +74,7 @@ TELEGRAM_RULE_SCHEMA: dict[str, Any] = {
         "pattern": {"type": "string"},
         "reply": {"type": "string"},
         "mode": {"type": "string", "enum": ["template", "ai"]},
+        "private_only": {"type": "boolean"},
         "max_per_hour": {"type": "integer"},
     },
     "required": ["name", "chats", "pattern", "reply", "mode", "max_per_hour"],
@@ -114,15 +131,27 @@ class Services:
     creative: CreativeService
     cognition: AgentCognition
     video: VideoEditor
+    phone_sync: PhoneSyncService
+    mail: MailService | None = None
+    updater: UpdateManager | None = None
     voice_daemon: NativeVoiceDaemon | None = None
     camera: Any | None = None
     modes: ModeController | None = None
     proactive: ProactiveObserver | None = None
-    ambient: AmbientMusic | None = None
     runtime: RuntimeControl | None = None
     capabilities: CapabilityRegistry | None = None
     offline_cache: OfflineCache | None = None
     learning: InterfaceLearning | None = None
+    teaching: TeachingSession | None = None
+    food: FoodService | None = None
+    opener: OpenService | None = None
+    request_router: RequestRouter | None = None
+    bridge: ConversationBridge | None = None
+    # Иконка в трее. Поле обязано быть объявлено: класс со slots=True не даёт
+    # добавить атрибут на лету, и присваивание молча не сработало бы.
+    tray: Any = None
+    # Эмоции Эрви — одно состояние на процесс; объявлено явно из-за slots=True.
+    emotions: Any = None
     desktop_operator: DesktopOperator | None = None
     app_skills: AppSkills | None = None
     selftest: StartupSelfTest | None = None
@@ -141,15 +170,34 @@ class Services:
 def build_services(settings: Settings | None = None) -> Services:
     settings = settings or Settings.load()
     db = Database(settings.data_dir / "eirven.db")
+    # Ordinary desktop work is single-pass by default.  The safety layer still owns
+    # irreversible commits (send/pay/order/delete), but a fresh install must not make
+    # the owner click through a confirmation prompt for every reversible observation.
+    stored_confirmation_mode = str(db.get_setting("confirmation_mode", "full") or "full").casefold()
+    settings.confirmation_mode = stored_confirmation_mode if stored_confirmation_mode in {"every", "critical", "full"} else "full"
     desktop_override = db.get_setting("desktop_control_enabled", None)
-    if not db.get_setting("v031_desktop_default_applied", False):
-        # v0.3.1 intentionally enables the single computer-access permission by default.
+    if isinstance(desktop_override, bool):
+        settings.enable_desktop_control = desktop_override
+    else:
+        # A fresh local install is ready for voice-first computer control. Existing
+        # installations retain their saved choice; the owner can still switch the
+        # single desktop-control permission off in Privacy.
         settings.enable_desktop_control = True
         db.set_setting("desktop_control_enabled", True)
-        db.set_setting("v031_desktop_default_applied", True)
-    elif isinstance(desktop_override, bool):
-        settings.enable_desktop_control = desktop_override
+    db.set_setting("r57_permission_model_applied", True)
     hardware = detect_hardware()
+    # Темп машины: без видеокарты все сроки ожидания модели растут согласованно.
+    from . import pace as _pace
+    _pace.set_hardware(getattr(hardware, "runtime_mode", ""))
+    # One capability set, calibrated to the actual device.  This assignment happens
+    # before ModelGateway/Router are built, so even a legacy .env cannot force CPU
+    # offload on a smaller computer.
+    settings.model = hardware.recommended_main_model
+    settings.fast_model = hardware.recommended_fast_model
+    settings.code_model = hardware.recommended_code_model
+    settings.deep_model = hardware.recommended_main_model
+    settings.vision_model = hardware.recommended_vision_model
+    settings.max_parallel_tasks = min(settings.max_parallel_tasks, hardware.recommended_parallelism)
     identity = IdentityService(db)
 
     def self_gendered(female: str, male: str) -> str:
@@ -197,11 +245,14 @@ def build_services(settings: Settings | None = None) -> Services:
     settings.enable_game_control = bool(settings.enable_desktop_control)
     gateway = ModelGateway(settings)
     video = VideoEditor(settings, gateway)
+    phone_sync = PhoneSyncService(db)
+    style = StyleStore(db)
+    mail = MailService(db, gateway, settings, style)
+    updater = UpdateManager(settings.root_dir, db, version=APP_VERSION, build=APP_BUILD)
     router = ModelRouter(settings, gateway, hardware)
     memory = MemoryStore(
         db, gateway, settings.embedding_model, semantic_enabled=settings.semantic_memory
     )
-    style = StyleStore(db)
     relationships = RelationshipStore(db)
     browser = BrowserAutomation(settings)
     applications = ApplicationService(browser, settings.data_dir / "application_index.json")
@@ -217,11 +268,14 @@ def build_services(settings: Settings | None = None) -> Services:
     intents = IntentRouter()
     companion_host = "127.0.0.1" if settings.host in {"0.0.0.0", "::"} else settings.host
     companion = DesktopCompanion(
-        db, identity, f"http://{companion_host}:{settings.port}/ui/"
+        db, identity, f"http://{companion_host}:{settings.port}/ui/",
+        root_dir=settings.root_dir,
     )
     game = GamePilot(settings, gateway, tools)
     creative = CreativeService(settings)
-    camera = None
+    # Camera is opt-in: constructing the sensor is side-effect free, and capture
+    # starts only after the owner enables it from the UI or voice command.
+    camera = CameraService(settings, gateway)
     modes = ModeController(settings, db, applications, tools, camera)
     runtime = RuntimeControl()
     offline_cache = OfflineCache(db)
@@ -260,6 +314,9 @@ def build_services(settings: Settings | None = None) -> Services:
         creative=creative,
         cognition=cognition,
         video=video,
+        phone_sync=phone_sync,
+        mail=mail,
+        updater=updater,
         camera=camera,
         modes=modes,
         runtime=runtime,
@@ -267,6 +324,28 @@ def build_services(settings: Settings | None = None) -> Services:
         learning=learning,
         desktop_lock=desktop_lock,
     )
+    services.teaching = TeachingSession(services)
+    services.food = FoodService(settings, gateway, db, memory)
+    chat.food = services.food
+    services.opener = OpenService(settings, gateway, tools)
+    chat.opener = services.opener
+    services.request_router = RequestRouter(settings, gateway)
+    chat.request_router = services.request_router
+    from .emotions import EmotionState as _EmotionState
+    services.emotions = _EmotionState()
+    try:
+        services.companion.emotion_source = services.emotions.current
+    except Exception:
+        pass
+    chat.emotions = services.emotions
+    services.bridge = ConversationBridge(
+        settings, gateway, memory,
+        fast_hardware=(getattr(hardware, "runtime_mode", "") == "gpu_resident"),
+    )
+    chat.bridge = services.bridge
+    # ChatService owns the deterministic "обучи выполнению" branch, so it needs the
+    # session object directly -- it has no reference to the Services graph.
+    chat.teaching = services.teaching
 
     # Components that need the assembled Services graph are bound in a second phase.
     runtime.bind(services)
@@ -276,9 +355,20 @@ def build_services(settings: Settings | None = None) -> Services:
     setattr(tools, "runtime_control", runtime)
     setattr(tools, "desktop_lock", desktop_lock)
     setattr(tools, "cognition", cognition)
+    # Expose mail as a generic capability of the universal tool engine. Actual sending
+    # remains confirmation-gated in ChatService; autonomous tools can only inspect,
+    # classify, move high-confidence spam and stage drafts.
+    setattr(tools, "mail_service", mail)
+    # Notes/calendar are first-class authoritative tools. The model chooses the
+    # capability; ToolExecutor performs one typed write and verifies SQLite before the
+    # phone outbox can replicate it.
+    setattr(tools, "phone_sync_service", phone_sync)
     capabilities = CapabilityRegistry(services)
     desktop_operator = DesktopOperator(services, learning)
     app_skills = AppSkills(services, desktop_operator)
+    # App/service resolution is exposed as one ordinary capability of the reactive
+    # engine. AppSkills no longer owns the chat front door.
+    setattr(tools, "service_opener", app_skills)
     startup_selftest = StartupSelfTest(services)
     planner = ActionPlanner()
     # Bind the live desktop/app components before constructing recovery/workflow
@@ -295,6 +385,12 @@ def build_services(settings: Settings | None = None) -> Services:
     mission_engine = MissionEngine(services)
     services.selftest = startup_selftest
     services.planner = planner
+    # planner and recovery were referenced as self.planner / self.recovery inside
+    # ChatService but only ever assigned on the Services graph, so those branches
+    # raised AttributeError whenever they were reached. Assigned here, after both
+    # objects exist.
+    chat.planner = planner
+    chat.recovery = recovery
     services.verifier = verifier
     services.recovery = recovery
     services.universal_workflow = universal_workflow
@@ -316,6 +412,8 @@ def build_services(settings: Settings | None = None) -> Services:
     setattr(chat, "cognition", cognition)
     setattr(chat, "telegram", telegram)
     setattr(chat, "video", video)
+    setattr(chat, "phone_sync", phone_sync)
+    setattr(chat, "mail", mail)
     telegram.bind_remote_handler(
         lambda command, chat_id: chat.complete(
             command,
@@ -373,13 +471,24 @@ def build_services(settings: Settings | None = None) -> Services:
                 model=router.agent_model(task),
                 max_steps=settings.max_agent_steps,
                 external_stop_event=context.stop_event,
+                require_tool_action=True,
+                require_side_effect=True,
+                require_verification=True,
             )
-        context.update("Задача завершена", completed_steps=1, progress=0.99)
+        outcome = agent.last_run_outcome()
+        context.update("Проверяю результат", completed_steps=1, progress=0.99)
         report = gender_guard(report)
-        result = {"report": report}
+        result = {
+            "report": report,
+            "ok": bool(outcome.get("verified")),
+            "completed": bool(outcome.get("used_side_effect")),
+            "verified": bool(outcome.get("verified")),
+            "error": "Постусловие фоновой задачи не подтверждено" if not outcome.get("verified") else "",
+        }
         notify(
             context,
-            f"Фоновая задача завершена.\n\n{report}",
+            (f"Постусловие фоновой задачи подтверждено.\n\n{report}" if result["verified"]
+             else f"Фоновое действие завершилось без подтверждённого постусловия.\n\n{report}"),
             {"task_id": context.task_id, "kind": "agent", "result": result},
         )
         return result
@@ -402,13 +511,21 @@ def build_services(settings: Settings | None = None) -> Services:
         result = app_skills.repair_vscode(question)
         if not result.get("ok"):
             raise RuntimeError(str(result.get("error") or "Не удалось исправить проект VS Code"))
+        verified = result.get("verified") is True
         context.update("Перепроверяю исправление", completed_steps=2, progress=0.88)
         context.update("Исправление VS Code завершено", completed_steps=3, progress=0.99)
-        report = gender_guard(str(result.get("answer") or "Исправление завершено."))
-        result["answer"] = report
+        report = gender_guard(str(result.get("answer") or "Исполнитель не вернул итоговый отчёт."))
+        result.update({
+            "answer": report,
+            "ok": verified,
+            "completed": bool(result.get("completed", True)),
+            "verified": verified,
+            "error": "Проверка исправления VS Code не подтверждена" if not verified else "",
+        })
         notify(
             context,
-            self_gendered(f"Проект в VS Code исправила и перепроверила. {report}", f"Проект в VS Code исправил и перепроверил. {report}"),
+            (self_gendered(f"Исправление проекта в VS Code подтверждено. {report}", f"Исправление проекта в VS Code подтверждено. {report}")
+             if verified else f"Изменения в VS Code выполнены, но итоговая проверка не подтверждена. {report}"),
             {"task_id": context.task_id, "kind": "vscode_repair", "result": result},
         )
         return result
@@ -452,7 +569,11 @@ def build_services(settings: Settings | None = None) -> Services:
             report = agent.run(
                 prompt, model=router.agent_model(problem), max_steps=min(settings.max_agent_steps, 14),
                 external_stop_event=context.stop_event,
+                require_tool_action=True,
+                require_side_effect=True,
+                require_verification=True,
             )
+        outcome = agent.last_run_outcome()
         report = gender_guard(report)
         context.update("Проверяю результат", completed_steps=4, progress=0.88)
         # One cheap final observation helps catch fixes that did not change the UI/process state.
@@ -461,8 +582,16 @@ def build_services(settings: Settings | None = None) -> Services:
         except Exception:
             pass
         context.update("Ремонт завершён", completed_steps=5, progress=0.99)
-        result = {"problem": problem, "report": report, "evidence": evidence}
-        notify(context, self_gendered(f"Диагностику закончила. {report}", f"Диагностику закончил. {report}"), {"task_id": context.task_id, "kind": "repair", "result": result})
+        result = {
+            "problem": problem, "report": report, "evidence": evidence,
+            "ok": bool(outcome.get("verified")),
+            "completed": bool(outcome.get("used_side_effect")),
+            "verified": bool(outcome.get("verified")),
+            "error": "Исправление не подтверждено" if not outcome.get("verified") else "",
+        }
+        notify(context, (("Исправление подтверждено. " + report) if result["verified"] else
+                         ("Диагностика завершена, но исправление не подтверждено. " + report)),
+               {"task_id": context.task_id, "kind": "repair", "result": result})
         return result
 
     def screen_query_handler(context: TaskContext, payload: dict[str, Any]) -> dict[str, Any]:
@@ -479,16 +608,8 @@ def build_services(settings: Settings | None = None) -> Services:
         encoded = base64.b64encode(Path(path).read_bytes()).decode("ascii")
         context.update("Анализирую то, что реально видно", completed_steps=1, progress=0.45)
         vision_model=router.task_model("vision")
-        # Make this background vision task disposable too; it must not poison the next
-        # interactive voice turn on small GPUs.
-        try:
-            for resident in gateway.installed_models():
-                low=str(resident).casefold()
-                if low!=str(vision_model).casefold() and any(k in low for k in ("gemma","qwen","gpt-oss","devstral","moondream")):
-                    try: gateway.unload(resident)
-                    except Exception: pass
-        except Exception:
-            pass
+        # The DeepSeek text checkpoint is shared with chat; keeping it resident makes
+        # both this screenshot and the next foreground reply warm.
         with gateway.background(context.stop_event):
             message = gateway.chat(
                 [
@@ -507,11 +628,11 @@ def build_services(settings: Settings | None = None) -> Services:
                 think=False,
                 num_ctx=768,
                 num_predict=120,
-                keep_alive="0",
-                timeout_seconds=7,
+                keep_alive=settings.keep_alive,
+                timeout_seconds=30,
             )
         answer = str(message.get("content") or "").strip() or "Не смог уверенно разобрать экран."
-        context.update("Готово", completed_steps=2, progress=0.99)
+        context.update("Анализ экрана завершён", completed_steps=2, progress=0.99)
         result = {"answer": answer, "screenshot": path}
         notify(context, answer, {"task_id": context.task_id, "kind": "screen_query", "result": result})
         return result
@@ -585,7 +706,7 @@ def build_services(settings: Settings | None = None) -> Services:
             details = json.dumps(push_result, ensure_ascii=False).lower()
             if (not push_result.get("ok")) or int(push_result.get("result", {}).get("returncode", 1)) != 0:
                 if any(x in details for x in ("authentication", "permission denied", "publickey", "sign in", "authorization", "could not read")):
-                    raise TaskNeedsUser("Git требует авторизацию. Войди в GitHub/подтверди SSH-доступ, затем напиши «готово».")
+                    raise TaskNeedsUser("Git-сервис требует авторизацию. Войди в аккаунт или подтверди SSH-доступ, затем напиши «готово».")
                 raise RuntimeError(f"Push не удался: {push_result}")
         context.update("Git готов", completed_steps=4, progress=0.99)
         result = {"path": str(path), "status": status, "commit": add, "push": push_result}
@@ -604,7 +725,7 @@ def build_services(settings: Settings | None = None) -> Services:
             url=f"https://www.coingecko.com/en/coins/{price['asset']}"
             open_system_url(url)
             browser_result={"url":url,"browser":"system_default"}
-        context.update("Готово", completed_steps=2, progress=0.99)
+        context.update("Цена получена", completed_steps=2, progress=0.99)
         result = {"price": price, "browser": browser_result}
         value = price.get("price")
         notify(
@@ -630,6 +751,7 @@ def build_services(settings: Settings | None = None) -> Services:
 - pattern: Python regex для входящего текста; для всех сообщений ".*".
 - reply: точный шаблон ответа. Допустимы {{name}}, {{chat}}, {{text}}.
 - mode=template, если ответ полностью задан; mode=ai, если нужно генерировать по инструкции.
+- private_only=true, если нужно исключить группы и каналы или отвечать только людям.
 - max_per_hour от 1 до 30.
 Верни только JSON.
 """.strip()
@@ -657,26 +779,25 @@ def build_services(settings: Settings | None = None) -> Services:
         )
         return result
 
-    def identity_change_handler(context: TaskContext, payload: dict[str, Any]) -> dict[str, Any]:
-        context.set_total(1)
-        values = {key: value for key, value in payload.items() if value is not None}
-        updated = identity.update(values)
-        context.update("Настройки личности сохранены", completed_steps=1, progress=0.99)
-        return updated.to_dict()
-
     def application_handler(context: TaskContext, payload: dict[str, Any]) -> dict[str, Any]:
         query = str(payload.get("application") or payload.get("query") or "").strip()
         context.set_total(2)
         context.update("Ищу приложение на компьютере", completed_steps=0, progress=0.1)
         try:
-            result = applications.launch(query)
-            context.update("Приложение запущено", completed_steps=2, progress=0.99)
+            wrapped = tools.execute("launch_application", {"application": query})
+            if not wrapped.get("ok"):
+                raise ApplicationError(str(wrapped.get("error") or "запуск отклонён"))
+            result = dict(wrapped.get("result") or {})
+            verified = bool(result.get("verified"))
+            context.update("Проверяю активное окно", completed_steps=2, progress=0.99)
             notify(
                 context,
-                self_gendered(f"Запустила приложение «{result.get('name', query)}».", f"Запустил приложение «{result.get('name', query)}»."),
+                (f"Приложение «{result.get('name', query)}» открыто; активное окно подтверждено."
+                 if verified else f"Windows приняла запуск «{result.get('name', query)}», но активное окно не подтвердилось."),
                 {"task_id": context.task_id, "kind": "application_launch", "result": result},
             )
-            return result
+            return {**result, "ok": verified, "completed": True, "verified": verified,
+                    "error": "Активное окно приложения не подтвердилось" if not verified else ""}
         except ApplicationError as exc:
             # First try an already-open window without spending an LLM call. This makes
             # "открой Telegram"/"открой VS Code" deterministic even while a project is
@@ -695,9 +816,15 @@ def build_services(settings: Settings | None = None) -> Services:
                 match = next((w for w in windows or [] if any(term in str(w.get("title", "")).casefold() for term in terms)), None)
                 if match:
                     focused = tools.execute("window_focus", {"handle": int(match["handle"])})
-                    result = {"fallback": "existing_window", "window": focused}
-                    context.update("Окно открыто", completed_steps=2, progress=0.99)
-                    notify(context, self_gendered(f"Открыла уже запущенное окно «{match.get('title', query)}».", f"Открыл уже запущенное окно «{match.get('title', query)}»."), {"task_id": context.task_id, "kind": "application_launch", "result": result})
+                    inner = focused.get("result") if isinstance(focused, dict) else {}
+                    verified = bool(focused.get("ok") and isinstance(inner, dict) and inner.get("verified"))
+                    result = {"fallback": "existing_window", "window": focused, "ok": verified,
+                              "completed": True, "verified": verified,
+                              "error": "Фокус окна не подтвердился" if not verified else ""}
+                    context.update("Проверяю фокус окна", completed_steps=2, progress=0.99)
+                    notify(context, (f"Уже запущенное окно «{match.get('title', query)}» получило фокус."
+                                     if verified else f"Окно «{match.get('title', query)}» найдено, но фокус не подтвердился."),
+                           {"task_id": context.task_id, "kind": "application_launch", "result": result})
                     return result
             except Exception:
                 pass
@@ -707,28 +834,62 @@ def build_services(settings: Settings | None = None) -> Services:
             if query.casefold() in {"telegram", "телеграм", "тг"}:
                 import webbrowser
                 open_system_url("https://web.telegram.org/")
-                result = {"fallback": "web", "url": "https://web.telegram.org/"}
-                context.update("Telegram открыт в браузере", completed_steps=2, progress=0.99)
-                notify(context, self_gendered("Открыла Telegram Web в браузере по умолчанию.", "Открыл Telegram Web в браузере по умолчанию."), {"task_id": context.task_id, "kind": "application_launch", "result": result})
+                result = {"fallback": "web", "url": "https://web.telegram.org/", "ok": False,
+                          "completed": True, "verified": False,
+                          "error": "Браузер не предоставил текущий URL для проверки"}
+                context.update("Команда браузеру отправлена", completed_steps=2, progress=0.99)
+                notify(context, "Telegram Web передан браузеру, но текущий URL не удалось подтвердить.",
+                       {"task_id": context.task_id, "kind": "application_launch", "result": result})
                 return result
 
-            # For an arbitrary application, fall back to the universal agent. It is
-            # explicitly forbidden from creating a software project for a launch request.
-            context.update("Ищу ярлык или другой способ запуска", completed_steps=1, progress=0.55)
-            with gateway.background(context.stop_event):
-                report = agent.run(
-                    f"Пользователь попросил открыть или запустить: {query}. "
-                    f"Быстрый поиск приложения вернул: {exc}. Найди существующее приложение, окно, "
-                    "ярлык или веб-версию и открой наиболее естественный вариант. Не создавай проект, "
-                    "не создавай исходники и не устанавливай новое ПО без отдельной просьбы.",
-                    model=router.agent_model(query),
-                    max_steps=min(settings.max_agent_steps, 8),
-                    external_stop_event=context.stop_event,
+            # A missing desktop entry is not permission to invent an installer or to
+            # launch a package manager.  Resolve the requested name through the live
+            # browser adapter first; this is the same path used by ``open_service`` and
+            # works for arbitrary services without a hard-coded catalogue.  Only a
+            # confirmed official web surface may be reported as success.
+            context.update("Приложения нет в системе — ищу официальный веб‑вариант", completed_steps=1, progress=0.55)
+            try:
+                fallback = dict(applications.web_fallback(query) or {})
+                browser_window = {}
+                try:
+                    browser_window = dict(tools.execute("foreground_window", {}).get("result") or {})
+                except Exception:
+                    browser_window = {}
+                verified = bool(fallback.get("url")) and bool(browser_window.get("title") or fallback.get("url"))
+                context.update("Проверяю страницу в браузере", completed_steps=2, progress=0.99)
+                result = {
+                    "fallback": "official_web",
+                    "url": str(fallback.get("url") or ""),
+                    "title": str(fallback.get("title") or query),
+                    "browser": str(fallback.get("browser") or "system_default"),
+                    "window": browser_window,
+                    "ok": verified,
+                    "completed": verified,
+                    "verified": verified,
+                    "error": "Официальную страницу не удалось подтвердить в браузере" if not verified else "",
+                }
+                notify(
+                    context,
+                    (f"Открыла веб‑версию «{result['title']}» в браузере." if verified
+                     else f"Не нашла установленное приложение «{query}» и не смогла подтвердить его официальный сайт."),
+                    {"task_id": context.task_id, "kind": "application_launch", "result": result},
                 )
-            context.update("Готово", completed_steps=2, progress=0.99)
-            result = {"fallback": "desktop_agent", "report": report}
-            notify(context, self_gendered(f"Выполнила запрос через управление компьютером.\n\n{report}", f"Выполнил запрос через управление компьютером.\n\n{report}"), {"task_id": context.task_id, "kind": "application_launch", "result": result})
-            return result
+                return result
+            except Exception as web_exc:
+                context.update("Не нашла безопасный веб‑вариант", completed_steps=2, progress=0.99)
+                result = {
+                    "fallback": "none",
+                    "ok": False,
+                    "completed": False,
+                    "verified": False,
+                    "error": f"Приложение «{query}» не найдено. Установку не запускала: {web_exc}",
+                }
+                notify(
+                    context,
+                    f"«{query}» не найдено. Я не скачивала и не устанавливала программы; безопасный веб‑вариант не подтверждён.",
+                    {"task_id": context.task_id, "kind": "application_launch", "result": result},
+                )
+                return result
 
     def media_recommend_handler(context: TaskContext, payload: dict[str, Any]) -> dict[str, Any]:
         request = str(payload.get("request") or "Посоветуй хороший фильм").strip()
@@ -764,8 +925,11 @@ def build_services(settings: Settings | None = None) -> Services:
         context.set_total(2)
         context.update("Ищу, где посмотреть легально", completed_steps=0, progress=0.15)
         result = applications.search_legal_movie(title, free_only=free_only)
-        context.update("Открыл варианты в браузере", completed_steps=2, progress=0.99)
-        notify(context, self_gendered(f"Открыла поиск легальных вариантов для «{title}».", f"Открыл поиск легальных вариантов для «{title}»."), {"task_id": context.task_id, "kind": "media_open", "result": result})
+        context.update("Команда браузеру отправлена", completed_steps=2, progress=0.99)
+        result = {**result, "ok": False, "completed": True, "verified": False,
+                  "error": "Текущий URL системного браузера не подтверждён"}
+        notify(context, f"Поиск легальных вариантов для «{title}» передан браузеру, но открытый URL не подтвердился.",
+               {"task_id": context.task_id, "kind": "media_open", "result": result})
         return result
 
     def creative_handler(context: TaskContext, payload: dict[str, Any]) -> dict[str, Any]:
@@ -783,21 +947,48 @@ def build_services(settings: Settings | None = None) -> Services:
         )
         context.update("Изображение создано", completed_steps=2)
         if use_as_avatar:
-            identity.update({"custom_avatar_path": result["path"]})
-            companion.stop()
-            companion.start()
-            result["used_as_avatar"] = True
-        context.update("Готово", completed_steps=3, progress=0.99)
-        notify(context, f"Изображение готово: {result['path']}", {"task_id": context.task_id, "kind": "creative_image", "result": result})
+            result["used_as_avatar"] = False
+            result["avatar_note"] = "Внешний вид Эрви закреплён и не заменяется пользовательскими изображениями."
+        target = Path(str(result.get("path") or ""))
+        verified = target.is_file() and target.stat().st_size > 0
+        if verified:
+            result["size"] = target.stat().st_size
+            result["sha256"] = hashlib.sha256(target.read_bytes()).hexdigest()
+        result.update({"ok": verified, "completed": True, "verified": verified,
+                       "error": "Файл изображения не найден после генерации" if not verified else ""})
+        context.update("Проверяю созданный файл", completed_steps=3, progress=0.99)
+        notify(context, (f"Файл изображения создан и повторно найден: {target}" if verified else
+                         "Генератор завершился, но выходной файл не найден."),
+               {"task_id": context.task_id, "kind": "creative_image", "result": result})
         return result
 
     def video_edit_handler(context: TaskContext, payload: dict[str, Any]) -> dict[str, Any]:
         result = video.render(context, payload)
-        answer = gender_guard(str(result.get("answer") or "Видео готово."))
-        result["answer"] = answer
+        outputs = list(result.get("outputs") or []) if isinstance(result, dict) else []
+        checked: list[dict[str, Any]] = []
+        verified = bool(outputs)
+        for item in outputs:
+            target = Path(str((item or {}).get("path") or ""))
+            if not target.is_file() or target.stat().st_size < 64:
+                verified = False
+                continue
+            actual_size = target.stat().st_size
+            expected_size = int((item or {}).get("size") or actual_size)
+            if actual_size != expected_size:
+                verified = False
+            checked.append({**dict(item or {}), "size": actual_size, "sha256": hashlib.sha256(target.read_bytes()).hexdigest()})
+        answer = gender_guard(str(result.get("answer") or "Монтаж завершился без итогового отчёта."))
+        result.update({
+            "answer": answer,
+            "outputs": checked,
+            "ok": verified,
+            "completed": bool(outputs),
+            "verified": verified,
+            "error": "Один или несколько выходных видеофайлов не прошли повторную проверку" if not verified else "",
+        })
         notify(
             context,
-            answer,
+            answer if verified else f"Монтаж завершился, но выходные файлы не прошли повторную проверку. {answer}",
             {"task_id": context.task_id, "kind": "video_edit", "result": result},
         )
         return result
@@ -826,17 +1017,14 @@ def build_services(settings: Settings | None = None) -> Services:
     tasks.register("screen_query", background(screen_query_handler))
     tasks.register("crypto_price", background(crypto_handler))
     tasks.register("telegram_rule", background(telegram_rule_handler))
-    tasks.register("identity_change", background(identity_change_handler))
     tasks.register("application_launch", background(application_handler))
     tasks.register("media_recommend", background(media_recommend_handler))
     tasks.register("media_open", background(media_open_handler))
     tasks.register("game", background(game_handler))
     tasks.register("creative_image", background(creative_handler))
     tasks.register("video_edit", background(video_edit_handler))
-    # r21 removes neuro-music entirely: the output device belongs to speech and media,
-    # and the UI no longer exposes a synthetic background-audio control.
-    services.ambient = None
     services.voice_daemon = NativeVoiceDaemon(services)
+    phone_sync.bind_notifier(lambda text: services.proactive._say(text, "warm") if services.proactive is not None else services.voice_daemon.say(text, emotion="warm"))
 
     def companion_status() -> dict[str, Any]:
         status = dict(services.voice_daemon.status())
@@ -871,4 +1059,8 @@ def build_services(settings: Settings | None = None) -> Services:
         tools,
         services_provider=lambda: services,
     )
+    try:
+        services.mail.resume_monitor_if_enabled()
+    except Exception:
+        pass
     return services

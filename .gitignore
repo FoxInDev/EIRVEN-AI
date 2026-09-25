@@ -1,62 +1,50 @@
-# Python
+# EIRVEN — не коммить секреты и тяжёлые артефакты
 .venv/
 venv/
+env/
 __pycache__/
 *.py[cod]
-*.egg-info/
-build/
-dist/
-
-# Local configuration and secrets
-.env
-.env.*
-!.env.example
+*.log
+logs/
+models/
+model_cache/
+.cache/
+data/*.key
 *.key
 *.pem
-
-# Runtime data and private memory
-data/*
-!data/.gitkeep
-workspace/*
-!workspace/.gitkeep
-video/*
-!video/.gitkeep
-!video/README.txt
-video_archive/*
-!video_archive/.gitkeep
-video_results/*
-!video_results/.gitkeep
-
-# Models and generated media
-models/
-*.gguf
-*.onnx
-*.bin
-data/screenshots/
-data/audio/
-
-# Tests, linters, IDE and OS
-.pytest_cache/
-.ruff_cache/
-.coverage
-htmlcov/
-.vscode/
+*.pfx
+*.session
+*.session-journal
+.env
+*.env
+secrets*.json
+token*.json
+credentials*.json
+*.sqlite
+*.sqlite3
+*.db
+dist/
+build/
+*.spec.bak
+_MEI*/
+.installed*
 .idea/
+.vscode/
 .DS_Store
 Thumbs.db
+# === Профиль браузера (Edge) — cookies, пароли, история ===
+app-window/
 
-# Logs
-*.log
+# === Личные данные рантайма ===
+data/
+!data/.gitkeep
 
-# Local installation markers and runtime profiles
-.installed-v*
-logs/
-playwright-profile/
+# === Бинарники сборки ===
+*.exe
+*.apk
+*.dll
+*.pdb
 
+# === Логи и прочее ===
 loggg2.txt
-loggg2.prev.txt
-
-# Generated public release artifacts
-release/
-*.zip
-SHA256SUMS.txt
+*.egg-info/

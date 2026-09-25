@@ -1,3 +1,8 @@
+# EIRVEN AI — 2.4.0
+# Copyright (c) 2026 Даниил Павлов. Все права защищены. / All rights reserved.
+# Лицензия: EIRVEN Non-Commercial License — см. файл LICENSE.
+# Обязательна видимая подпись «На базе Эрви». Скрывать её запрещено (см. LICENSE).
+# EIRVEN-LICENSE-HEADER
 from __future__ import annotations
 
 import re
@@ -68,7 +73,7 @@ class ReliabilityRouter:
         value = re.sub(r"[^a-zа-я0-9._@:+/-]+", " ", value)
         value = re.sub(r"\s+", " ", value).strip()
         value = re.sub(
-            r"^(?:(?:eirven|eirwen|эрви|эйрви|эйрвен|эйрвэн|эрвен|ирвен)\s+)+",
+            r"^(?:(?:eirven|eirwen|эрви|эйрви|эрви|эйрвэн|эрвен|ирвен)\s+)+",
             "", value, flags=re.I,
         )
         value = re.sub(r"^(?:(?:пожалуйста|плиз|слушай|ну|эй)\s+)+", "", value, flags=re.I)
@@ -100,11 +105,16 @@ class ReliabilityRouter:
         return "", ""
 
     def classify(self, query: str, *, foreground_title: str = "") -> ReliabilityDecision:
-        clean = self.norm(query)
+        clean = re.sub(r"[.!?]+$", "", self.norm(query)).strip()
         if not clean:
             return ReliabilityDecision()
 
-        if re.fullmatch(r"(?:что\s+ты\s+умеешь|что\s+умеешь|что\s+ты\s+можешь|какие\s+у\s+тебя\s+возможности)", clean):
+        capability_clean = clean.strip(" .!?")
+        if re.fullmatch(
+            r"(?:(?:кратко\s+)?(?:перечисли|расскажи|объясни)?\s*(?:мне\s+)?(?:чем\s+ты\s+можешь\s+помочь(?:\s+обычному\s+пользователю)?|"
+            r"что\s+ты\s+умеешь|что\s+умеешь|что\s+ты\s+можешь|какие\s+у\s+тебя\s+возможности))",
+            capability_clean,
+        ):
             return ReliabilityDecision("capabilities", reason="fixed capability question", confidence=1.0)
 
         if re.fullmatch(
@@ -147,6 +157,16 @@ class ReliabilityRouter:
             # Natural content phrases can omit a second imperative: ``open YouTube, any video``.
             if tail and re.search(r"\b(?:любое\s+видео|любой\s+ролик|любую\s+песн\w*|любой\s+трек)\b", tail, re.I):
                 return ReliabilityDecision("app_compound", app=explicit_app, remainder=tail, reason="explicit app with content request", confidence=.97)
+            # "Включи Яндекс Музыку" is a playback request, not merely an app-open
+            # request.  Keeping "открой" separate preserves the owner's ability to
+            # inspect the page without starting audio.
+            if explicit_app == "yandex_music" and re.match(
+                r"^\s*(?:включи|вруби|запусти|воспроизведи)\b", clean, re.I,
+            ):
+                return ReliabilityDecision(
+                    "media_start", app="yandex_music",
+                    reason="explicit Yandex Music playback", confidence=.995, verb="включи",
+                )
             return ReliabilityDecision("app_open", app=explicit_app, reason="explicit app open", confidence=.99)
 
         action_matches = list(self.ACTION.finditer(clean))
@@ -180,16 +200,22 @@ class ReliabilityRouter:
             if "на этом сайте" in clean or "на текущем сайте" in clean or "на этой странице" in clean or re.search(r"\bраздел\b", clean) or self.PAGE_LOCAL.fullmatch(target):
                 return ReliabilityDecision("page_navigation", target=target, reason="explicit current-page destination", confidence=.98)
 
-        # A bare request to start music is a media goal, not an application-name lookup.
-        # It uses the configured/default music surface and is therefore deterministic.
+        # A bare request resumes an already-open player.  It never silently chooses a
+        # vendor; ChatService asks the owner when no active player can be identified.
         if re.fullmatch(r"(?:включи|вруби|запусти|поставь|воспроизведи)\s+(?:мне\s+)?(?:музык\w*|песн\w*|трек\w*)", clean, re.I):
-            return ReliabilityDecision("media_start", app="yandex_music", reason="generic music playback", confidence=.98, verb="включи")
+            return ReliabilityDecision("media_start", app="current_player", reason="generic music playback", confidence=.98, verb="включи")
 
         # Player transport/control phrases must remain controls even while a media page
         # is foreground.  Without this guard, ``поставь лайк`` and ``поставь на паузу``
         # were misread as song titles and sent into Yandex search.
-        if re.search(r"\b(?:поставь\s+на\s+паузу|пауза|продолжи|играй|следующ\w*|предыдущ\w*)\b", clean):
-            return ReliabilityDecision("media", reason="transport command without new app", confidence=.94)
+        if re.search(
+            r"\b(?:поставь\s+на\s+паузу|пауза|продолжи|играй|следующ\w*|предыдущ\w*|"
+            r"лайк|дизлайк|не\s+нравится|нравится|перемот\w*|промот\w*|"
+            r"повтор\w*|зацикл\w*|случайн\w*\s+поряд\w*|перемеша\w*|какая\s+песня|какой\s+трек)\b",
+            clean,
+            re.I,
+        ):
+            return ReliabilityDecision("media", app="current_player", reason="player control without new app", confidence=.97)
 
         content = re.fullmatch(r"(?:включи|воспроизведи|поставь)\s+[«\"']?(.+?)[»\"']?", clean, re.I)
         if content and re.search(r"(?:яндекс\s*музык|yandex\s*music|music\.yandex)", foreground_title, re.I):
