@@ -8,8 +8,8 @@ version = "2.4.0"
 description = "Локальный voice-first персональный ИИ с фоновым голосом, задачами и управлением компьютером"
 readme = "README.md"
 requires-python = ">=3.11,<3.14"
-license = {text = "AGPL-3.0-or-later"}
-authors = [{name = "EIRVEN"}]
+license = {text = "LicenseRef-EIRVEN-NC-1.0 (см. LICENSE)"}
+authors = [{name = "Даниил Павлов"}]
 dependencies = [
   "fastapi>=0.115,<1.0",
   "uvicorn[standard]>=0.34,<1.0",

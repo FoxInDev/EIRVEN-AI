@@ -1,0 +1,912 @@
+{
+ "format": "EIRVEN_RELEASE_MANIFEST_V1",
+ "product": "EIRVEN AI",
+ "version": "2.4.0",
+ "build": "r72-k5",
+ "keep_install_markers": [
+  ".installed-v2.4.0-r72-k5",
+  ".installed-v2.4.0-r72-k4"
+ ],
+ "files": {
+  ".env.example": {
+   "size": 1585,
+   "sha256": "833871d293190964e5b2999f89abba86b7b90fedf81a76435ba925fa1413b553"
+  },
+  ".gitignore": {
+   "size": 379,
+   "sha256": "24dbd4d8636a159829edcc28410d532b395ce6dde5f45a96308b0f1a9d9e9851"
+  },
+  "BUILD_INFO.json": {
+   "size": 808,
+   "sha256": "85ed147eb386f451f90abbbc96b1b8e7478d1fac48453e17f3c138b5045362be"
+  },
+  "CLEAN_OLD_FILES.cmd": {
+   "size": 269,
+   "sha256": "296ec2816787818621569d7921e071d126cca6f902326d8791c483829bdfd6fd"
+  },
+  "EIRVEN_VERSION.txt": {
+   "size": 394,
+   "sha256": "d6921d027bc44c453adc90ca7d65c1eedfa1ec17873ddc91d2dcf6887de4e4dd"
+  },
+  "LICENSE": {
+   "size": 5134,
+   "sha256": "f78460dc1f49fbe3bccae5f21cebe7634941bfe035a72d2b90fd4737cfb72dd7"
+  },
+  "MAKE_GITHUB_ARCHIVE.cmd": {
+   "size": 335,
+   "sha256": "6fdd231bcf2cd7bb4c21b6590ac7922691c6346dcdf43039153a92e70e893baa"
+  },
+  "NOTICE.md": {
+   "size": 1100,
+   "sha256": "938fd42845ac99cd8e684c01f23f77f9f2fea190a0d1dad4b422c277645d36a6"
+  },
+  "README.md": {
+   "size": 5184,
+   "sha256": "a110af3b6b2faede6211be2544d41e59e544e4d8dfe8243935bd6bb029081df2"
+  },
+  "SECURITY.md": {
+   "size": 2531,
+   "sha256": "10c4d7b08cbb14cf3b747762acdfadc00eea431fd66172825fb7a50a92f9d081"
+  },
+  "THIRD_PARTY_NOTICES.md": {
+   "size": 1346,
+   "sha256": "437d8c7b79e556302ad9c026095daf2200ed83a93549250bcac206ddfceace77"
+  },
+  "UNINSTALL.cmd": {
+   "size": 943,
+   "sha256": "5ef5decb7b67ebdbe80857dc134b5c8c2195eb89eaa59b25bb603e6bc9818cd2"
+  },
+  "assets/eirven-icon.png": {
+   "size": 317289,
+   "sha256": "512b03e5eacfc5b86d20f59a60827b0adcbde190068f1601c9a6460b475ddb21"
+  },
+  "assets/eirven-version.txt": {
+   "size": 799,
+   "sha256": "80ffa134504c06f6809e12a7ab48f20754ec76eaf625463cd188d751bbf0846d"
+  },
+  "assets/eirven.ico": {
+   "size": 182489,
+   "sha256": "b81ff7a570d928a113fcd4c49e2df1773885fc10bb32271633223c4ed517ba55"
+  },
+  "assets/eirven.png": {
+   "size": 1089346,
+   "sha256": "4aa240584d4cfa79c63bf03eb2b61256c09beea862aef8aa3c64b4bd075a993a"
+  },
+  "assets/installer-orb.png": {
+   "size": 57795,
+   "sha256": "874249fd6937f678402abf05f64981ba29c12c2312ea08f331de462e704e84fe"
+  },
+  "launcher.py": {
+   "size": 99962,
+   "sha256": "502936680cbf501a3483b5c4ca5dc5c1d054b5d5cea44a657d1049c655f9a159"
+  },
+  "make_github_archive.py": {
+   "size": 8253,
+   "sha256": "d987d4b30017ed47fe1be85e3024149dcbf30a04d7dc2ab0c4433ea0ba3a7c4c"
+  },
+  "pyproject.toml": {
+   "size": 2049,
+   "sha256": "5f2a23c411a4c24b6f1765693ceed064fef78ab985d4c5a98f7e69d7ce6ae1ed"
+  },
+  "requirements-build.txt": {
+   "size": 48,
+   "sha256": "9fe9e44c68fbcbc1b31c0c069b706664b7758b37f25606775580aaf3348048d5"
+  },
+  "requirements-desktop.txt": {
+   "size": 414,
+   "sha256": "9b5911d441794173339a9831e779935bc0ac562bce8fe3f79a21f86c1220976b"
+  },
+  "requirements-integrations.txt": {
+   "size": 20,
+   "sha256": "5bad3901a1ec1476ce06a6682f930fee72c76999265ca913bb991f84636818cc"
+  },
+  "requirements-voice.txt": {
+   "size": 913,
+   "sha256": "688a296196415cbf8103863e252fb08c0a3f2c23f9d768308dce2bbc424aa401"
+  },
+  "requirements.txt": {
+   "size": 291,
+   "sha256": "3b77c1700ba5adf7fa40ed297d9fd388fe22cf0c9eb943463f6312466cd41d77"
+  },
+  "scripts/bootstrap.py": {
+   "size": 118968,
+   "sha256": "0e366e7a5dcfc5bbdd8c1122f9bfad45678a04f880bf679d1f83048f3b7785e4"
+  },
+  "scripts/build_macos.sh": {
+   "size": 992,
+   "sha256": "3379beda7b38ff7ed46221aea55644ff4dbf81913e76d18bc85deb545a853825"
+  },
+  "scripts/build_windows.ps1": {
+   "size": 21985,
+   "sha256": "8e867d12999aa5146cc7ef3e82becc24a1329d71d7b622ebe9e3570d475e5c2b"
+  },
+  "scripts/clean_old_files.ps1": {
+   "size": 5744,
+   "sha256": "1340466e52a36b26c2fa9ee5bc7f967cf2e449fbb66687bd9a73d04bcf20c559"
+  },
+  "scripts/create_shortcut.ps1": {
+   "size": 2314,
+   "sha256": "2b75e3c0335a15f1863dc306f255ba65f3aed268863874c2f0338e6c685eabe9"
+  },
+  "scripts/eirven_paths.py": {
+   "size": 4856,
+   "sha256": "68807046772c3877c9d1831194dc95288bd26553cf72f3660d8b6b61065e1641"
+  },
+  "scripts/ensure_mobile_firewall.ps1": {
+   "size": 2523,
+   "sha256": "4b8a34cc4381d3082d0ac20ce88cb2f01f4183029a0c9ae8caab988ef2d569bc"
+  },
+  "scripts/ensure_ollama.ps1": {
+   "size": 19889,
+   "sha256": "4af4ce0e9371d47a2152adf107550e0d0bb2502e719d8df10ae23de1b2dd17c5"
+  },
+  "scripts/ensure_runtime.ps1": {
+   "size": 14675,
+   "sha256": "c227f56ae7fba35aab2856c180527833a18922363a9675c1267d5aa25204a703"
+  },
+  "scripts/install_autostart.ps1": {
+   "size": 1267,
+   "sha256": "01ce320ab91e17ba20c95407cb588a5eadb14cf4e7fa6b4237666d18d9464ec7"
+  },
+  "scripts/install_macos.command": {
+   "size": 1840,
+   "sha256": "050e5be68f4ed718e10a53c5ec24c568aaff67d4bf754fbeb9568bf90a8d0c34"
+  },
+  "scripts/macos_entry.py": {
+   "size": 4706,
+   "sha256": "635688073e308da3788e3bf70439f8796f03b717e6ed19b74e8aa9ac418c3a1a"
+  },
+  "scripts/migrate_data.ps1": {
+   "size": 6353,
+   "sha256": "68c61bfbd76d8f962cfe52d5732ec0ee6520846baa7bd628703e745c6c5c50bc"
+  },
+  "scripts/package_macos.py": {
+   "size": 2223,
+   "sha256": "e77f9cd9d9e70a9c89125a4acaa273219cffd4a609451de2254d2b6a5d6fbe2d"
+  },
+  "scripts/repair_windows.ps1": {
+   "size": 149,
+   "sha256": "152d44fcdb5c97e22ab443e051b10f2b0c83f07c4b0ea9e97b3eb4d54047cd30"
+  },
+  "scripts/replace_launcher_when_free.ps1": {
+   "size": 540,
+   "sha256": "95cf51954679a73cf0ef99ac9f3e844a2aff19fd15545f3e4fec50adddc66e2e"
+  },
+  "scripts/start_windows.bat": {
+   "size": 781,
+   "sha256": "5f452a68ded921cd72588e1e55446e70e1efd9de17dccb947618c8c2e4b475a3"
+  },
+  "scripts/stop_eirven.ps1": {
+   "size": 3029,
+   "sha256": "7ab9989cb60b55ba0c69a6da5edb42f67831c6fb49923e79bc6fe217a56e4782"
+  },
+  "scripts/telegram_login.py": {
+   "size": 1101,
+   "sha256": "ebc8f539f8e00edb34997df48938d029a61b742f7a6fe85a4e1bc3b6f33cd156"
+  },
+  "scripts/transfer_data.ps1": {
+   "size": 11337,
+   "sha256": "09a05bdffc4ae917c89e98d28cd0fc327d85b16424aae834d12d61b17105cb0f"
+  },
+  "scripts/uninstall.ps1": {
+   "size": 10703,
+   "sha256": "7cb2d7f9d40d85e6dbb93e52e3a1c77d6f28af2d16bdbb66fab919c9fb4adce2"
+  },
+  "src/eirven_ai/__init__.py": {
+   "size": 48,
+   "sha256": "3b13165144a0752cba7e17d01eae7bdc43570dea8e5e5cb68e06848b81b06cfe"
+  },
+  "src/eirven_ai/action_model.py": {
+   "size": 3318,
+   "sha256": "c1527e9ebb95ca5478fb29a54fcc4eb24e69c2920087cdb72911bb44270148ba"
+  },
+  "src/eirven_ai/action_planner.py": {
+   "size": 2613,
+   "sha256": "d23ab51dc5d3fcf6fa359f4e5c93eaa0143525869f2d1405ae24a93fe0e025fb"
+  },
+  "src/eirven_ai/action_protocol.py": {
+   "size": 8369,
+   "sha256": "e65724e0b534fcbeee8098c203ef9c1c122481fc2cd7d36c8b620430c4f7d468"
+  },
+  "src/eirven_ai/activity_journal.py": {
+   "size": 4423,
+   "sha256": "55b73eb172a31320ac1a7a7ffd85b2eb308ef168f048571f893ab30c2a60ae94"
+  },
+  "src/eirven_ai/affect.py": {
+   "size": 4251,
+   "sha256": "3f98a258c10de5b35eb00e8e02fea949992f11c025f897f42d26e60be5d88d30"
+  },
+  "src/eirven_ai/agent.py": {
+   "size": 278904,
+   "sha256": "ce00e7c1316d77b15c915e80a140eff716a738968f81ca5d2b0b89509bb5a067"
+  },
+  "src/eirven_ai/api.py": {
+   "size": 109298,
+   "sha256": "57d0b0326494f15a3213711e619898055d21199eac81e4f92689ccde50edbee1"
+  },
+  "src/eirven_ai/app.py": {
+   "size": 14535,
+   "sha256": "ccaa4938cfdead6eb5308e68d464d3dbf1d499a14416698bece16d5b7b067230"
+  },
+  "src/eirven_ai/app_key.py": {
+   "size": 5868,
+   "sha256": "c6f20299238ab27f0a4b647d25c0eb173352d4d4f39b5dcc4d34b360493a1dae"
+  },
+  "src/eirven_ai/app_skills.py": {
+   "size": 33237,
+   "sha256": "2957f94eda8da5ff6fd4b32388cc6f4b45147483659788dc9c00299599107279"
+  },
+  "src/eirven_ai/applications.py": {
+   "size": 31281,
+   "sha256": "056a8366cae2fa32ed984f1c5b2367a9605791a019d223cf217058ba0b8eb2b1"
+  },
+  "src/eirven_ai/artifacts.py": {
+   "size": 3484,
+   "sha256": "b4fdcee9b6cfb7658833b722d63a279d75310bfbd211299e850798643462ddbf"
+  },
+  "src/eirven_ai/attachments.py": {
+   "size": 9747,
+   "sha256": "8aedbbebebe16a0f604528c9b8a134c6a5524993f43f42a1a4b676ac8920f785"
+  },
+  "src/eirven_ai/audio_duck.py": {
+   "size": 7889,
+   "sha256": "49b6f7f1c03cb6e82981cd349305aedbe7c3a02695231d6c68599c23c3fea9a0"
+  },
+  "src/eirven_ai/autonomous_workflow.py": {
+   "size": 93587,
+   "sha256": "9cddb61c09884dbbc812f60ea0b193a0fdeacf1ece3e0489b2fedec556dcff2c"
+  },
+  "src/eirven_ai/bridge.py": {
+   "size": 21536,
+   "sha256": "3654df415021885fe480f414186a03bb75d1f1a62e69d08f926c7e1dd8919452"
+  },
+  "src/eirven_ai/browser.py": {
+   "size": 30160,
+   "sha256": "283077b06ea0d947bed8a3a844c1547522b34fad9245afab19b2174d4db97c2a"
+  },
+  "src/eirven_ai/camera.py": {
+   "size": 8310,
+   "sha256": "26d87bda78a7bdffce6cd080ffd5d52cd9abae75dd6cae0df428cf3aece14739"
+  },
+  "src/eirven_ai/capabilities.py": {
+   "size": 7467,
+   "sha256": "80ddbb1af4293ac5bb160e6c492f62e8a279b31d5f4d83f87375f2c3f8439da0"
+  },
+  "src/eirven_ai/chat.py": {
+   "size": 488159,
+   "sha256": "9028bbdf661697213fdf1f47ce2624972eeff8e83184b2ebe21f78dda3424948"
+  },
+  "src/eirven_ai/chat_jobs.py": {
+   "size": 15706,
+   "sha256": "7b39e4b6656d124eca0170e5b9ccba5d833a2e0f899565405d4c2d4111503efb"
+  },
+  "src/eirven_ai/cognition.py": {
+   "size": 16228,
+   "sha256": "9d45e13d32107e423bb14c697278fe5acf5b237ae74fada9b7fc9cef259768bb"
+  },
+  "src/eirven_ai/companion.py": {
+   "size": 37639,
+   "sha256": "3c730b9d67154d24d5409f7b1e9acf94de1068a04605b9ad938283cf3502b4df"
+  },
+  "src/eirven_ai/config.py": {
+   "size": 10517,
+   "sha256": "4ab9262b129e8e0612a3b2667e6a96a8745a8b321b72082d4683d33273810130"
+  },
+  "src/eirven_ai/creative.py": {
+   "size": 17835,
+   "sha256": "67787a5be8873f177e11151aee05e381a5e9c5000af43543c352e9e6cfcb78c0"
+  },
+  "src/eirven_ai/database.py": {
+   "size": 14230,
+   "sha256": "5104b531ab1cd4565774366ba9deeb6befeae424f273745bc77393ad037c39f9"
+  },
+  "src/eirven_ai/desktop_operator.py": {
+   "size": 118011,
+   "sha256": "51e915a9ddfc8da435b91d715efde53c30718e03cf5db5a529bb684981534a74"
+  },
+  "src/eirven_ai/dialogue.py": {
+   "size": 9011,
+   "sha256": "e4722c7175ebeef3872d1fbfabcd3c3e3acb75ee989784a96f7cfec51c82a43e"
+  },
+  "src/eirven_ai/distribution.py": {
+   "size": 8039,
+   "sha256": "72e98cd5b897ada58d9d49dfcdf929a64daab7b9418a627c71907b97a42b8850"
+  },
+  "src/eirven_ai/education_library.py": {
+   "size": 15651,
+   "sha256": "64b6cd5b5e891d6e5d2115eb45f86baf161243147cb3dbdee3c0625c3c6a0319"
+  },
+  "src/eirven_ai/emotions.py": {
+   "size": 5633,
+   "sha256": "7679f9cac153f3a90de525e428d0c8108a59782d303f29afa2d20e8cd532c51d"
+  },
+  "src/eirven_ai/food.py": {
+   "size": 25972,
+   "sha256": "0b2bf54dadf89ecd189ad5320d277b68d6b9ea66a9fd9789085e9c350e7e55dc"
+  },
+  "src/eirven_ai/game.py": {
+   "size": 5774,
+   "sha256": "3746def9a2d6573d7bfc43b4e9b0b2d11404f1f1f3f4e8c9f288527f08990623"
+  },
+  "src/eirven_ai/hardware.py": {
+   "size": 6637,
+   "sha256": "31c40c6fb99bdc4ae64319210dc6afe566409788adafe0d206c618439a93509e"
+  },
+  "src/eirven_ai/human_errors.py": {
+   "size": 5001,
+   "sha256": "516d73b369438692ea374392064a0b0dfc1aef39afe6fd7127a3303c80a007c4"
+  },
+  "src/eirven_ai/identity.py": {
+   "size": 10570,
+   "sha256": "688af2ae168f41f3a11ce7cd5cfb7f46bfc95ab93cb54e75386583275462ee7c"
+  },
+  "src/eirven_ai/intent_engine.py": {
+   "size": 8746,
+   "sha256": "b5d077ef91da4ad746fd9f956943815770660da8fd9bb3e18e69c633f2de4be3"
+  },
+  "src/eirven_ai/interface_learning.py": {
+   "size": 5573,
+   "sha256": "c4b561450e135486d42f2c86ba1d88e550848a33086b259ed77b771d71a0ea3a"
+  },
+  "src/eirven_ai/llm.py": {
+   "size": 42012,
+   "sha256": "a21bd442f9d81a10a64445864b69de8de9d6e69bc04e15c8d526e14ff0ea91d3"
+  },
+  "src/eirven_ai/llm_arbiter.py": {
+   "size": 2719,
+   "sha256": "7c9a8aa20e93c0e00fc0149b9ee44e39720f1c160485a9559f8b3e57630a13ae"
+  },
+  "src/eirven_ai/mail_service.py": {
+   "size": 40153,
+   "sha256": "acb521f0650ec540ce3f7a4b4c786e2ec3e4f2f6cc5c37feb7b7f1f848e8194a"
+  },
+  "src/eirven_ai/memory.py": {
+   "size": 22592,
+   "sha256": "9023beedb1af2c95a3313b710094f0e3031ada6bbb47712c79e6373ff12cd3e9"
+  },
+  "src/eirven_ai/mission_engine.py": {
+   "size": 74809,
+   "sha256": "0a7f4e1907d86a26b2d61b757fe8cada2e045185935fb8ae046994f854311c7a"
+  },
+  "src/eirven_ai/model_router.py": {
+   "size": 15353,
+   "sha256": "b7ba3273a70523d24719cab6692ab52abe2e871d38072215ffd3e738d07b45df"
+  },
+  "src/eirven_ai/modes.py": {
+   "size": 5460,
+   "sha256": "cad85a75b652564523de8c01079fd46de107e9c0ec4795bf81cda78858189e90"
+  },
+  "src/eirven_ai/network_doctor.py": {
+   "size": 14578,
+   "sha256": "8b6dbb81671068e99968b8f7f8213c4a14fd49d402f470ddef9c15a8bea3b5d6"
+  },
+  "src/eirven_ai/offline_cache.py": {
+   "size": 1621,
+   "sha256": "2af04a5c987235deb9c586f2a9d1a29449592e9ee9376f0041936ab1f2921fe5"
+  },
+  "src/eirven_ai/open_service.py": {
+   "size": 8876,
+   "sha256": "93ca6d2b2ea3955459e41512538e8942d6890b55effbf6e02615a2c89c13d276"
+  },
+  "src/eirven_ai/orb_eyes.py": {
+   "size": 6717,
+   "sha256": "f52fbc323fe14ba34abd7814ffe98462c344c62d63fb5d786d6c6055d90a373c"
+  },
+  "src/eirven_ai/orchestrator.py": {
+   "size": 10280,
+   "sha256": "01f9026aa9d46f4fec98b12d4a144c8b1012202ccaabcbb76d488c1f944ea67c"
+  },
+  "src/eirven_ai/pace.py": {
+   "size": 2846,
+   "sha256": "42bf44385422d5a671cbf6ff807b40617c0d31df5188f586d0f0b4d1384e38e0"
+  },
+  "src/eirven_ai/phone_sync.py": {
+   "size": 42815,
+   "sha256": "449d7cda1671d655ee67c6a04138e6f098b50e31704e58294f90886b3892e801"
+  },
+  "src/eirven_ai/privacy.py": {
+   "size": 3866,
+   "sha256": "ac1621149e4bdf7aa1dde0ddd9bc300ad35cd3f40c556b3f64b86bb5967bcff9"
+  },
+  "src/eirven_ai/proactive.py": {
+   "size": 26002,
+   "sha256": "4a9fd86460d955c8c685a03e076103da4519946006e1d68b1d276a7b4832a8a2"
+  },
+  "src/eirven_ai/projects.py": {
+   "size": 46450,
+   "sha256": "c3f2437644f6d8d30fecde556ec7d31f7c40b6ddb4f52db54b4fe1bcdc3658e7"
+  },
+  "src/eirven_ai/recovery.py": {
+   "size": 2169,
+   "sha256": "529d7a5d371b59e1e834bc1129d3f9bab94053353a0a035c0c6378a66bf765af"
+  },
+  "src/eirven_ai/release_policy.py": {
+   "size": 2388,
+   "sha256": "b99dbce26fd1d4c01c307db6d3d5f513249e5ac10564d569e3c6afb760ed3d3c"
+  },
+  "src/eirven_ai/reliability_router.py": {
+   "size": 16381,
+   "sha256": "443a0f6a710cb7d5b4bc0c58e1ec3e44d44014a53566e125f1ab72b06ddf873c"
+  },
+  "src/eirven_ai/resilience.py": {
+   "size": 4623,
+   "sha256": "89581f2156ced62f59046c3318c81c6785e09bc232c2a83e3cfdc61bd87aa867"
+  },
+  "src/eirven_ai/result_verifier.py": {
+   "size": 3146,
+   "sha256": "be48da841b8a86c2b91f222e838c768b6f7cc4e9ca40a54e630b6bef3f38b0e9"
+  },
+  "src/eirven_ai/risk_policy.py": {
+   "size": 13687,
+   "sha256": "04272cd284fe8a8ec041c7c66ba4a92e37524fdf6d33e0b0949bad83f6446c64"
+  },
+  "src/eirven_ai/router.py": {
+   "size": 9474,
+   "sha256": "5bfbe0dd2644b6fe801a455ed16f0b433fe05fa158e1795369a6356659bbb6f2"
+  },
+  "src/eirven_ai/runtime_control.py": {
+   "size": 11857,
+   "sha256": "0c093f7fd5f286d03f2a0652a8f8d3a7179efc0638a8a3892b118be07a3838c4"
+  },
+  "src/eirven_ai/russian_speech.py": {
+   "size": 15759,
+   "sha256": "fdc9f8591909e856ec2789b701354138b0dacc4e7bbcb3a232f6e525ab535fb9"
+  },
+  "src/eirven_ai/selftest.py": {
+   "size": 1549,
+   "sha256": "e47f32e407deee0df643a305b81175ec92d37f4659016822aa53551f6c9d918c"
+  },
+  "src/eirven_ai/services.py": {
+   "size": 59033,
+   "sha256": "643fbe1eb9e228f0473d12e9fd3a1289d9512ef3e8792081c4c1979711486c8d"
+  },
+  "src/eirven_ai/social.py": {
+   "size": 4539,
+   "sha256": "c6536c7f9b0d5910877a84f8ae77c0bcbb52656e228443dd10ce101e1e53bd0a"
+  },
+  "src/eirven_ai/style.py": {
+   "size": 4633,
+   "sha256": "06e3413918df6d13942ede29253ac6b8d4afe4ea4e24c18b4743fff428e5a6ce"
+  },
+  "src/eirven_ai/supervisor.py": {
+   "size": 8535,
+   "sha256": "f679cc7e4c969a5858d4d18afe373e41476364a6f9298d396419cb00fe14a593"
+  },
+  "src/eirven_ai/system_access.py": {
+   "size": 1301,
+   "sha256": "004d2d18b7dc4e1dd5fd8459ead2e55f8bbf41a4c00efb7e86073dda90a3a125"
+  },
+  "src/eirven_ai/system_browser.py": {
+   "size": 7997,
+   "sha256": "1a35ea805101d738e96fffdb227e3a12af8171e01044e2f48e004a825defa548"
+  },
+  "src/eirven_ai/tasks.py": {
+   "size": 25916,
+   "sha256": "2c539cea93f69af5224654089ebdcab7bb57373f3e773f70de11cb59776adea7"
+  },
+  "src/eirven_ai/teaching.py": {
+   "size": 10856,
+   "sha256": "64c2745f6575af0cf77c8aefcee4896853c4eccbe885111811cdbff137742c86"
+  },
+  "src/eirven_ai/telegram_service.py": {
+   "size": 66679,
+   "sha256": "8555b4aecb92f7de415890b1bdaac59fce0d1734582e936d0e1b8c601549b1db"
+  },
+  "src/eirven_ai/tools.py": {
+   "size": 178049,
+   "sha256": "2a24983ac2388b03462a0fb3cbe6665df594fc790a1699e49815ae1381ed4d6a"
+  },
+  "src/eirven_ai/trace.py": {
+   "size": 2518,
+   "sha256": "3f63d6221df3a3b6379d963e435e573c96cbeef07b49590ca0ee12bd3917bdce"
+  },
+  "src/eirven_ai/training_guard.py": {
+   "size": 1702,
+   "sha256": "a311dd5b45f38a5aaabeb3a137d4c63d7b046026127749f548d59d452896775b"
+  },
+  "src/eirven_ai/tray.py": {
+   "size": 5067,
+   "sha256": "8d6b2f461708e50e591a9cf6b11474b7b75cf4933d23cdfb111f548da836afc0"
+  },
+  "src/eirven_ai/tts_worker.py": {
+   "size": 29208,
+   "sha256": "0d7000c4099f956ed258783fcd57534f80a6b10ff695c62a9c7caef572db4d71"
+  },
+  "src/eirven_ai/tts_worker_client.py": {
+   "size": 8905,
+   "sha256": "b4ae7dbad81eee231a18175311437fc1c7bfbb4d254bb423ccc807f3589affa2"
+  },
+  "src/eirven_ai/ui_choices.py": {
+   "size": 3461,
+   "sha256": "b67fbe49bf858744dfa777082fb9665e92d1c4ae12ad1eddcf0d024b6ce13365"
+  },
+  "src/eirven_ai/universal_workflow.py": {
+   "size": 233473,
+   "sha256": "1000bb2b43d5085d0705f38b2cf975b70dd0eca10b6ccf429d81ef47474d3777"
+  },
+  "src/eirven_ai/updater.py": {
+   "size": 19199,
+   "sha256": "f5a762841558bb00b14d77e3d608343eba3bf2582f4b48d1c6506336f0811b39"
+  },
+  "src/eirven_ai/version.py": {
+   "size": 72,
+   "sha256": "f46584edc18bdfd33a21cc56f02a5dea2293712a518da3de78f10452caf0a5af"
+  },
+  "src/eirven_ai/video.py": {
+   "size": 105546,
+   "sha256": "38beafc07b3658fad33254925ac11c8c29e2582c6d5370255db7e1cf75d59575"
+  },
+  "src/eirven_ai/voice.py": {
+   "size": 31245,
+   "sha256": "23b4fd7f1bdbe3a555b35f5e0ad1dbf5786bd04e456d46445d37c17dc773a912"
+  },
+  "src/eirven_ai/voice_cues.py": {
+   "size": 4828,
+   "sha256": "83faa65ebca5bcd8a6af2d5f458a316db386d393e393749e684aab295c24ab57"
+  },
+  "src/eirven_ai/voice_daemon.py": {
+   "size": 119033,
+   "sha256": "2f3eabe180f54b03ec6750b3aa7743c368a707958830027b2a4e439690782af4"
+  },
+  "src/eirven_ai/voice_worker.py": {
+   "size": 12020,
+   "sha256": "d7b55e1d495a7358650b3ba5f00a9e7389ea99480c4ae1fae658130a32a13a84"
+  },
+  "src/eirven_ai/voice_worker_client.py": {
+   "size": 8905,
+   "sha256": "70652c7ee82f49045ee6a77f7c64b944cc6c239b23ee3841ce3ad1e02222e9f8"
+  },
+  "src/eirven_ai/web/NotoColorEmoji-OFL.txt": {
+   "size": 4308,
+   "sha256": "d4c9c14a3878673e9f5274d5a23d70a5940c76ba4c1b42545712245f50f4a06a"
+  },
+  "src/eirven_ai/web/NotoColorEmoji-v2.051.ttf": {
+   "size": 10673480,
+   "sha256": "72a635cb3d2f3524c51620cdde406b217204e8a6a06c6a096ff8ed4b5fd6e27b"
+  },
+  "src/eirven_ai/web/app.js": {
+   "size": 83333,
+   "sha256": "7e933de24d2e8800fadd6922aa2964a106e3b31c91d855205725c0b3c8a8ead7"
+  },
+  "src/eirven_ai/web/canonical-ervi.css": {
+   "size": 2266,
+   "sha256": "b7590c1739a7ac5e8f1bd3aa6ceaa0e9e95404abb0303e3395316486baa6ca75"
+  },
+  "src/eirven_ai/web/eirven-icon.png": {
+   "size": 49489,
+   "sha256": "5d1e6b38bc8103a2916aeec37fa9ec6432fb75086ec69f170313a7eda51d579b"
+  },
+  "src/eirven_ai/web/eirven-orb.png": {
+   "size": 655915,
+   "sha256": "85c9967979b015395f1fd3f28f75e4892e3d13403dc6a1e9ffff63013b63c1e7"
+  },
+  "src/eirven_ai/web/eirven-ui.css": {
+   "size": 74316,
+   "sha256": "634db6d2bcec0a2af59bb54daf02639932c6435e352fb0f57c2ec1d3d669b863"
+  },
+  "src/eirven_ai/web/emotions/desk/focused.png": {
+   "size": 13080,
+   "sha256": "82bc5d157c4cc81b6dc502bcf58092e6e8cc22295c17e33b16a64c47729f4eb6"
+  },
+  "src/eirven_ai/web/emotions/desk/joy.png": {
+   "size": 13686,
+   "sha256": "8f45297e7eb45f92a91d291b18d9bd03d773a2bc933b9c111c2037db29583ec9"
+  },
+  "src/eirven_ai/web/emotions/desk/laugh.png": {
+   "size": 14260,
+   "sha256": "ecf59ccfc6feba95dd78792924da5fec91ca98d410bb52a98523c5e4d6837acf"
+  },
+  "src/eirven_ai/web/emotions/desk/sleep.png": {
+   "size": 11262,
+   "sha256": "12faac6437965a1ff82c92d51d8045fa752e862c9577975c7a90c17d76207666"
+  },
+  "src/eirven_ai/web/emotions/desk/surprise.png": {
+   "size": 12517,
+   "sha256": "beeda1570b6e38c6f73c6dae341198e9deae6c0f7fcfb0215de2789f4a7a6e4a"
+  },
+  "src/eirven_ai/web/emotions/desk/thinking.png": {
+   "size": 13401,
+   "sha256": "e58b836134a1f39e52fccd0f7b247f869f3567e1baacbd95fce4895ce9ff0809"
+  },
+  "src/eirven_ai/web/emotions/focused.png": {
+   "size": 14611,
+   "sha256": "881a4e810b2d43cddf264636b9223c77a3944d3f73db9b1bde0603c8ebcbc34a"
+  },
+  "src/eirven_ai/web/emotions/joy.png": {
+   "size": 14795,
+   "sha256": "0ae5c2fd76761329485cfdc887e398427028571dc31375a1f430fb75a2b48552"
+  },
+  "src/eirven_ai/web/emotions/laugh.png": {
+   "size": 15744,
+   "sha256": "c5a8303c7416ac6a8a6f8300edcfa57d3e9d8a4e9fc06432c8f8c8bee931d6c1"
+  },
+  "src/eirven_ai/web/emotions/sleep.png": {
+   "size": 12558,
+   "sha256": "b1b9613153d2a5a3d1e3760c57d5796183c115e84c5153f3008fba8a79e121b2"
+  },
+  "src/eirven_ai/web/emotions/surprise.png": {
+   "size": 13845,
+   "sha256": "c163c3cd2d9854c2d2113be9795cfa7b4fa73dccd0a32c6cbfa94d3f8e39b4c2"
+  },
+  "src/eirven_ai/web/emotions/thinking.png": {
+   "size": 14556,
+   "sha256": "3b0cf19fb8b4d3c3a36aecac790340ed2d035ad864bae379285cd0f84ab4dc48"
+  },
+  "src/eirven_ai/web/favicon.png": {
+   "size": 8796,
+   "sha256": "0fa86b7b110f429ea62ce4666747128d6a784e2896cff6d1ca8ebddd8a9b158e"
+  },
+  "src/eirven_ai/web/index.html": {
+   "size": 50317,
+   "sha256": "978059788efb7aef3e19afc5f360122c5fe23c4c9f9fa42fede685dd289bd4d8"
+  },
+  "src/eirven_ai/web/katex-fonts/KaTeX_AMS-Regular.ttf": {
+   "size": 63632,
+   "sha256": "68534840bcfdd2bffb6f0e8deb48684dd01e7f04ea2813267577afb906de1d13"
+  },
+  "src/eirven_ai/web/katex-fonts/KaTeX_AMS-Regular.woff": {
+   "size": 33516,
+   "sha256": "30da91e84c893f875e252689faebdc590b2871145e8adc7f9a9d4dbd8ce0b251"
+  },
+  "src/eirven_ai/web/katex-fonts/KaTeX_AMS-Regular.woff2": {
+   "size": 28076,
+   "sha256": "0cdd387c9590a1a9f9794560022dbb59654a7d86f187aa0c81495ad42d3a7308"
+  },
+  "src/eirven_ai/web/katex-fonts/KaTeX_Caligraphic-Bold.ttf": {
+   "size": 12368,
+   "sha256": "07d8e303ce4fc12b4bb54f1004170dd190a1f3db45d400fe68060df3e0897268"
+  },
+  "src/eirven_ai/web/katex-fonts/KaTeX_Caligraphic-Bold.woff": {
+   "size": 7716,
+   "sha256": "1ae6bd7475590e97e7f145a89e09ccde322f7a6bc0b91607b1c8b8ee28290fed"
+  },
+  "src/eirven_ai/web/katex-fonts/KaTeX_Caligraphic-Bold.woff2": {
+   "size": 6912,
+   "sha256": "de7701e42cf1f4cf0b766c03fb27977207eee2f4fd5d76fa82188406da43ea4c"
+  },
+  "src/eirven_ai/web/katex-fonts/KaTeX_Caligraphic-Regular.ttf": {
+   "size": 12344,
+   "sha256": "ed0b74372feefcbb9c0666b2e210da37b7e49fa7fbbf3eeb11db5f693dacfbb7"
+  },
+  "src/eirven_ai/web/katex-fonts/KaTeX_Caligraphic-Regular.woff": {
+   "size": 7656,
+   "sha256": "3398dd02302557a793f2863f88e02d96ce10df2abffa07c8e9fa90775116e65c"
+  },
+  "src/eirven_ai/web/katex-fonts/KaTeX_Caligraphic-Regular.woff2": {
+   "size": 6908,
+   "sha256": "5d53e70ad607c2352162dec9e0923fb54ecdafaccbf604cd8dcf7d00facb989b"
+  },
+  "src/eirven_ai/web/katex-fonts/KaTeX_Fraktur-Bold.ttf": {
+   "size": 19584,
+   "sha256": "9163df9c7122432e6495b4229fa9071cf9ae86a758ae5efc4924ec2e1a6dbce1"
+  },
+  "src/eirven_ai/web/katex-fonts/KaTeX_Fraktur-Bold.woff": {
+   "size": 13296,
+   "sha256": "9be7ceb88004ab8ad124082246fbfcca4091e36385d4ec6ed1df67375dad50fb"
+  },
+  "src/eirven_ai/web/katex-fonts/KaTeX_Fraktur-Bold.woff2": {
+   "size": 11348,
+   "sha256": "74444efd593c005e3f4573b44524704c0af0a937fe911cca9e94068d0d140d3f"
+  },
+  "src/eirven_ai/web/katex-fonts/KaTeX_Fraktur-Regular.ttf": {
+   "size": 19572,
+   "sha256": "1e6f9579e90e2cac37f8f60a597c436e075c114385652b7cbeb0dec0421291b3"
+  },
+  "src/eirven_ai/web/katex-fonts/KaTeX_Fraktur-Regular.woff": {
+   "size": 13208,
+   "sha256": "5e28753be717dac97f559f49bc10be9cf3c124ddcabda6659d11cb68febc6463"
+  },
+  "src/eirven_ai/web/katex-fonts/KaTeX_Fraktur-Regular.woff2": {
+   "size": 11316,
+   "sha256": "51814d270d06ff0255dba0799994fa4d8c84d11f09951d47595f4abb1f3602dc"
+  },
+  "src/eirven_ai/web/katex-fonts/KaTeX_Main-Bold.ttf": {
+   "size": 51336,
+   "sha256": "138ac28d1663b3037e9c5f52371fa5c63d8324f4a38d22cd573e6ea3a3fd0cf8"
+  },
+  "src/eirven_ai/web/katex-fonts/KaTeX_Main-Bold.woff": {
+   "size": 29912,
+   "sha256": "c76c5d696297d51b9cb1639c7da4334f0e7dec81b42b11213b5e25ef671bb822"
+  },
+  "src/eirven_ai/web/katex-fonts/KaTeX_Main-Bold.woff2": {
+   "size": 25324,
+   "sha256": "0f60d1b897938ec918c8ce073092411baf9438f6739465693ff18b0f9d20b021"
+  },
+  "src/eirven_ai/web/katex-fonts/KaTeX_Main-BoldItalic.ttf": {
+   "size": 32968,
+   "sha256": "70ee1f64a20f2048c21940ef46d0144fd215baa953ca69afd1e31e98544f708f"
+  },
+  "src/eirven_ai/web/katex-fonts/KaTeX_Main-BoldItalic.woff": {
+   "size": 19412,
+   "sha256": "a6f7ec0d846ac7ad975adb8959c37ed49b94acbc4ae436db9ce9e20287e4a64c"
+  },
+  "src/eirven_ai/web/katex-fonts/KaTeX_Main-BoldItalic.woff2": {
+   "size": 16780,
+   "sha256": "99cd42a3c072d918f2f44984a807cf7aa16e13545fd0875fc07c6c65f99e715b"
+  },
+  "src/eirven_ai/web/katex-fonts/KaTeX_Main-Italic.ttf": {
+   "size": 33580,
+   "sha256": "0d85ae7cc30f23790a7f1a58c4a112fdca8aae769b6ba11429af1d98b1b6cb3a"
+  },
+  "src/eirven_ai/web/katex-fonts/KaTeX_Main-Italic.woff": {
+   "size": 19676,
+   "sha256": "f1d6ef86f3b11a528bd5185199bd2443ecb2b0dead96d88674b5a2c12be24bdf"
+  },
+  "src/eirven_ai/web/katex-fonts/KaTeX_Main-Italic.woff2": {
+   "size": 16988,
+   "sha256": "97479ca6cce906abc961ecac96faa5f9ca2e61b8e7670d475826bcdee9a7c267"
+  },
+  "src/eirven_ai/web/katex-fonts/KaTeX_Main-Regular.ttf": {
+   "size": 53580,
+   "sha256": "d0332f52868370fd83ae7fa46470f90c8f2eab2fcf12bc4f88080b340c95a830"
+  },
+  "src/eirven_ai/web/katex-fonts/KaTeX_Main-Regular.woff": {
+   "size": 30772,
+   "sha256": "c6368d87e8a1a3a5d337623d83d8dc4b868f242a9ad476237d6f8d1e0f168cdc"
+  },
+  "src/eirven_ai/web/katex-fonts/KaTeX_Main-Regular.woff2": {
+   "size": 26272,
+   "sha256": "c2342cd8b869e01752a9321dc17213fc40d4d04c79688c1d43f2cf316abd7866"
+  },
+  "src/eirven_ai/web/katex-fonts/KaTeX_Math-BoldItalic.ttf": {
+   "size": 31196,
+   "sha256": "f9377ab0271cda59af24bcffbd46a4d0c8a3572ffafdbb38de2ad5ea7b0d5ee5"
+  },
+  "src/eirven_ai/web/katex-fonts/KaTeX_Math-BoldItalic.woff": {
+   "size": 18668,
+   "sha256": "850c0af5c2238497febaf5e461d880bf458c341f42f4f330f1b1ab5698b1998e"
+  },
+  "src/eirven_ai/web/katex-fonts/KaTeX_Math-BoldItalic.woff2": {
+   "size": 16400,
+   "sha256": "dc47344dbb6cb5b655c8460d561f4df5f501b90c804ad3c6cec65fe322351ab1"
+  },
+  "src/eirven_ai/web/katex-fonts/KaTeX_Math-Italic.ttf": {
+   "size": 31308,
+   "sha256": "08ce98e51b04d58945a301e639e02b6998af29fdfd61a7b8afdd07bbfc479d4a"
+  },
+  "src/eirven_ai/web/katex-fonts/KaTeX_Math-Italic.woff": {
+   "size": 18748,
+   "sha256": "8a8d244581371912b8f3f5a23e2437cb2a59cd9bcaebb0346e722c05737a2571"
+  },
+  "src/eirven_ai/web/katex-fonts/KaTeX_Math-Italic.woff2": {
+   "size": 16440,
+   "sha256": "7af58c5ec8f132a2ddde9027c6d7814decce4d3b822a11192a42a20e2e973264"
+  },
+  "src/eirven_ai/web/katex-fonts/KaTeX_SansSerif-Bold.ttf": {
+   "size": 24504,
+   "sha256": "1ece03f79f95277d57dc7f6b435a74e1379b0d46104a8530286b60ff49369ea0"
+  },
+  "src/eirven_ai/web/katex-fonts/KaTeX_SansSerif-Bold.woff": {
+   "size": 14408,
+   "sha256": "ece03cfd83e22c212cdef66feb8442d25a083beb988db3f1883f3f9738d750ba"
+  },
+  "src/eirven_ai/web/katex-fonts/KaTeX_SansSerif-Bold.woff2": {
+   "size": 12216,
+   "sha256": "e99ae51144bf1232efcc1bfe5add36262c6866b0faab24fa75740e1b98577a62"
+  },
+  "src/eirven_ai/web/katex-fonts/KaTeX_SansSerif-Italic.ttf": {
+   "size": 22364,
+   "sha256": "3931dd81faed86ba021bb2bbdc36f5bed9a38d6b4f4077aca59b265aa1b02083"
+  },
+  "src/eirven_ai/web/katex-fonts/KaTeX_SansSerif-Italic.woff": {
+   "size": 14112,
+   "sha256": "91ee67500cc0129aa0ace3ac5c61ff1692102f0f31d02b69347fba35dcb75bf2"
+  },
+  "src/eirven_ai/web/katex-fonts/KaTeX_SansSerif-Italic.woff2": {
+   "size": 12028,
+   "sha256": "00b26ac825e2095056396e0553b8ac26d3f8ad158c3826e28b4c45b385c4714a"
+  },
+  "src/eirven_ai/web/katex-fonts/KaTeX_SansSerif-Regular.ttf": {
+   "size": 19436,
+   "sha256": "f36ea897e19f4a2e571d1e900e4e3710e438deb05a842486045ba0a3e616a4ad"
+  },
+  "src/eirven_ai/web/katex-fonts/KaTeX_SansSerif-Regular.woff": {
+   "size": 12316,
+   "sha256": "11e4dc8a6471ff6d6ee561d53d10fde8f7489e798257ff449c5d37c197435605"
+  },
+  "src/eirven_ai/web/katex-fonts/KaTeX_SansSerif-Regular.woff2": {
+   "size": 10344,
+   "sha256": "68e8c73ef42afd3ccec58bf0fba302cce448938e7fc020a5e31f8a952eee1342"
+  },
+  "src/eirven_ai/web/katex-fonts/KaTeX_Script-Regular.ttf": {
+   "size": 16648,
+   "sha256": "1c67f068fea8bb09bf099c088b1cf64bd27516a6e07f4684344873564bb66a67"
+  },
+  "src/eirven_ai/web/katex-fonts/KaTeX_Script-Regular.woff": {
+   "size": 10588,
+   "sha256": "d96cdf2b3bdd4d64a8fd5f74a4c467f123a8a73931cd435889f08ffaf9bf947a"
+  },
+  "src/eirven_ai/web/katex-fonts/KaTeX_Script-Regular.woff2": {
+   "size": 9644,
+   "sha256": "036d4e95149b69ff9bcc0cd55771efeb25ffa3947293e69acd78d5ac328c684b"
+  },
+  "src/eirven_ai/web/katex-fonts/KaTeX_Size1-Regular.ttf": {
+   "size": 12228,
+   "sha256": "95b6d2f1a50173bfedb8c63e1d1c99b10427d0a4df4201cb44513b226951a22b"
+  },
+  "src/eirven_ai/web/katex-fonts/KaTeX_Size1-Regular.woff": {
+   "size": 6496,
+   "sha256": "c943cc986384f59e86bea5fd7dc50a9c4dfe567a7c05eb40d6790720dead97c9"
+  },
+  "src/eirven_ai/web/katex-fonts/KaTeX_Size1-Regular.woff2": {
+   "size": 5468,
+   "sha256": "6b47c40166b6dbe21a5dfca7718413f2147fd2399be1ba605d8ad39cedf25dfe"
+  },
+  "src/eirven_ai/web/katex-fonts/KaTeX_Size2-Regular.ttf": {
+   "size": 11508,
+   "sha256": "a6b2099fb555c60e3a0db3a08842ebf1d732c6eb4e4bf44913613bed4fc4e39b"
+  },
+  "src/eirven_ai/web/katex-fonts/KaTeX_Size2-Regular.woff": {
+   "size": 6188,
+   "sha256": "2014c523c3210bcc166648c4d4cc57f05b747df07a24277bf71c51e67dc79e3d"
+  },
+  "src/eirven_ai/web/katex-fonts/KaTeX_Size2-Regular.woff2": {
+   "size": 5208,
+   "sha256": "d04c54219f9eaec6d4d4fd42dfb28785975a4794d6b2fc71e566b9cd6db842dd"
+  },
+  "src/eirven_ai/web/katex-fonts/KaTeX_Size3-Regular.ttf": {
+   "size": 7588,
+   "sha256": "500e04d54f0d51666332c9d2089aa803be22aa878eca539e59fa53c6e522b082"
+  },
+  "src/eirven_ai/web/katex-fonts/KaTeX_Size3-Regular.woff": {
+   "size": 4420,
+   "sha256": "6ab6b62e9b62dae2c00dd90f791bd10950be0ecc3490d7d6045f51c2e8fe0949"
+  },
+  "src/eirven_ai/web/katex-fonts/KaTeX_Size3-Regular.woff2": {
+   "size": 3624,
+   "sha256": "73d591271b1604960cb10bb90fee021670af7297017e0e98480b332d11f51995"
+  },
+  "src/eirven_ai/web/katex-fonts/KaTeX_Size4-Regular.ttf": {
+   "size": 10364,
+   "sha256": "c647367d1dd4e162468717d020e1fc0f1dc5c26ebfdffbe55261713bf88c5877"
+  },
+  "src/eirven_ai/web/katex-fonts/KaTeX_Size4-Regular.woff": {
+   "size": 5980,
+   "sha256": "99f9c6750b489c9462bf04900bd3f939df9b829339daaaaa99ef5495cdddea58"
+  },
+  "src/eirven_ai/web/katex-fonts/KaTeX_Size4-Regular.woff2": {
+   "size": 4928,
+   "sha256": "a4af7d414440a1c1790825cfb700cf9cf43b0f2c4b04f0ebc523011ad9853ec0"
+  },
+  "src/eirven_ai/web/katex-fonts/KaTeX_Typewriter-Regular.ttf": {
+   "size": 27556,
+   "sha256": "f01f3e87d9c6a61c0c081ceb577abd864eb00a612f7ac1620dd6915fad2ef5aa"
+  },
+  "src/eirven_ai/web/katex-fonts/KaTeX_Typewriter-Regular.woff": {
+   "size": 16028,
+   "sha256": "e14fed02b1aba7ce9f5afd5844b5d0321b22351febc720e0de8b8723527609f7"
+  },
+  "src/eirven_ai/web/katex-fonts/KaTeX_Typewriter-Regular.woff2": {
+   "size": 13568,
+   "sha256": "71d517d67827787cfabdf186914cc3358eda539e37931941f2b2fd4a21f68c0b"
+  },
+  "src/eirven_ai/web/katex.min.css": {
+   "size": 25089,
+   "sha256": "7ae51ba8b47fecb8d1901a6b730c928c85c6cfd8835fda2f2705e2fb7d16c8ec"
+  },
+  "src/eirven_ai/web/katex.min.js": {
+   "size": 272179,
+   "sha256": "2ec5916941ef4383e0314eaabcc712301b06001d9fb68e08d751d2bae5a27a1a"
+  },
+  "src/eirven_ai/web/markdown.js": {
+   "size": 6287,
+   "sha256": "f3d6db1d90e8b5cb63b6c41933086b1c65f0edbf4e595e52cf7a4d83bc067593"
+  },
+  "src/eirven_ai/web/orb.js": {
+   "size": 11476,
+   "sha256": "6689b702dbb93274b2b8f74a1fadd5cfa8870a6fd3dead95cfcd07b43bf3dfc0"
+  },
+  "src/eirven_ai/web/qrcode.js": {
+   "size": 56694,
+   "sha256": "18ae399f81182bc9de916e9c77b195df20cc58d6f2d55a62b085a299f1bf1780"
+  },
+  "src/eirven_ai/web/styles.css": {
+   "size": 66173,
+   "sha256": "af954fda5f569c136c0a0530e32a6898e6a0f9108c0b793c2a936049c2fc656d"
+  },
+  "src/eirven_ai/win_input.py": {
+   "size": 3280,
+   "sha256": "60e708ea9b49658e3d4789d3dc88e5b191865eaa9712f6b13eb2d874a7c5fbca"
+  }
+ }
+}

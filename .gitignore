@@ -1,50 +1,32 @@
-# EIRVEN — не коммить секреты и тяжёлые артефакты
+# Эрви — не коммитить данные, секреты и тяжёлые файлы
 .venv/
-venv/
-env/
-__pycache__/
-*.py[cod]
-*.log
+data/
 logs/
 models/
-model_cache/
-.cache/
-data/*.key
+ollama-models/
+generated/
+video/
+_old_files_backup/
+build/
+dist/
+pyinstaller-hooks/
+.launcher-update/
+src/eirven_ai.egg-info/
+__pycache__/
+*.py[cod]
+*.exe
+*.spec
+*.log
+loggg*.txt
+.env
 *.key
-*.pem
-*.pfx
 *.session
 *.session-journal
-.env
-*.env
-secrets*.json
-token*.json
-credentials*.json
-*.sqlite
-*.sqlite3
-*.db
-dist/
-build/
-*.spec.bak
-_MEI*/
-.installed*
-.idea/
-.vscode/
-.DS_Store
-Thumbs.db
-# === Профиль браузера (Edge) — cookies, пароли, история ===
+storage.json
+.installed-v*
+.payload*
+# === Профиль браузера Edge — cookies, пароли, история ===
 app-window/
 
-# === Личные данные рантайма ===
-data/
-!data/.gitkeep
-
-# === Бинарники сборки ===
-*.exe
-*.apk
-*.dll
-*.pdb
-
-# === Логи и прочее ===
-loggg2.txt
+# === Egg-info (у тебя указан, но с префиксом src/ — а он может появиться и в корне) ===
 *.egg-info/

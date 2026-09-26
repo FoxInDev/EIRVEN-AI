@@ -1,8 +1,8 @@
 {
   "product": "EIRVEN AI",
   "version": "2.4.0",
-  "build": "r72-k4",
-  "release_date": "2026-08-27",
+  "build": "r72-k5",
+  "release_date": "2026-09-26",
   "python": ">=3.11,<3.14",
   "platform": "Windows 10/11; macOS source package",
   "tests_included": true,

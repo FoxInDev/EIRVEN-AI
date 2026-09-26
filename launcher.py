@@ -1,8 +1,3 @@
-# EIRVEN AI — 2.4.0
-# Copyright (c) 2026 Даниил Павлов. Все права защищены. / All rights reserved.
-# Лицензия: EIRVEN Non-Commercial License — см. файл LICENSE.
-# Обязательна видимая подпись «На базе Эрви». Скрывать её запрещено (см. LICENSE).
-# EIRVEN-LICENSE-HEADER
 from __future__ import annotations
 
 import http.client
@@ -30,8 +25,14 @@ elif FROZEN:
 else:
     APP_ROOT = ROOT
 DEFAULT_PORT = 7860
-CURRENT_BUILD = "r72-k4"
-INSTALL_MARKER = ".installed-v2.4.0-r72-k4"
+CURRENT_BUILD = "r72-k5"
+INSTALL_MARKER = ".installed-v2.4.0-r72-k5"
+# Отметки установки прошлых сборок, у которых тот же набор зависимостей. С ними
+# полная переустановка при обновлении не нужна: раньше каждая новая сборка при
+# первом запуске заново гоняла весь установщик — это минуты ожидания впустую.
+COMPATIBLE_INSTALL_MARKERS = (".installed-v2.4.0-r72-k4",)
+RELEASE_MANIFEST = "release_manifest.json"
+PAYLOAD_MARKER = ".payload"
 RELEASE_TEXT_MODEL = "qwen3.5:4b"
 RELEASE_VISION_MODEL = "qwen3.5:2b"
 RELEASE_MODEL_ENV = {
@@ -86,7 +87,7 @@ EMBEDDED_FILES = (
     ".env.example", "launcher.py", "pyproject.toml", "requirements.txt",
     "requirements-desktop.txt", "requirements-integrations.txt", "requirements-voice.txt",
     "requirements-build.txt",
-    "BUILD_INFO.json", "EIRVEN_VERSION.txt", "LICENSE", "README.md", "SECURITY.md",
+    "BUILD_INFO.json", "EIRVEN_VERSION.txt", "LICENSE", "NOTICE.md", "README.md", "SECURITY.md",
     "THIRD_PARTY_NOTICES.md",
     # Видимый файл удаления рядом с установщиком: сборка идёт через PyInstaller,
     # поэтому привычного unins000.exe (его создаёт только Inno Setup) здесь нет.
@@ -327,12 +328,88 @@ def _app_entry_url(port: int, next_path: str = "/ui/") -> str:
     target = next_path if next_path.startswith("/ui") else "/ui/"
     return f"http://127.0.0.1:{int(port)}/ui/open?k={quote(key)}&next={quote(target)}"
 
+def _load_release_manifest(base: Path) -> tuple[dict | None, str]:
+    """Манифест версии: список файлов программы с размерами и SHA-256."""
+    import hashlib
+    try:
+        raw = (base / RELEASE_MANIFEST).read_bytes()
+        data = json.loads(raw.decode("utf-8"))
+    except Exception:
+        return None, ""
+    if not isinstance(data, dict) or not isinstance(data.get("files"), dict):
+        return None, ""
+    return data, hashlib.sha256(raw).hexdigest()[:20]
+
+
+def _manifest_program_files(manifest: dict) -> dict[str, dict]:
+    """Только то, что лончер раскладывает: папки src/scripts/assets и корневые файлы."""
+    files = manifest.get("files") or {}
+    return {
+        rel: meta for rel, meta in files.items()
+        if rel.split("/", 1)[0] in EMBEDDED_DIRECTORIES or rel in EMBEDDED_FILES
+    }
+
+
+def _payload_is_current(manifest: dict, payload_id: str) -> bool:
+    """Установленная копия уже именно этой версии — раскладывать заново не нужно.
+
+    Сверка по отметке и по размерам файлов: это доли секунды. Если файл удалён
+    или подменён, размеры не сойдутся — и копия будет разложена заново.
+    """
+    try:
+        recorded = (APP_ROOT / PAYLOAD_MARKER).read_text(encoding="ascii").split()
+    except OSError:
+        return False
+    if not recorded or recorded[-1] != payload_id:
+        return False
+    for rel, meta in _manifest_program_files(manifest).items():
+        try:
+            if (APP_ROOT / rel).stat().st_size != int(meta.get("size", -1)):
+                return False
+        except (OSError, ValueError, TypeError):
+            return False
+    return True
+
+
+def _prune_foreign_files(manifest: dict) -> int:
+    """Удалить из папок программы файлы, которых нет в этой версии.
+
+    Нужны, когда папку не удалось заменить целиком (её держал антивирус или
+    другая программа) и новые файлы легли поверх старых. Раньше в этом случае
+    модули прошлых версий оставались рядом с новыми. Трогаем только
+    src/eirven_ai, scripts и assets: данные, настройки и модели лежат в других местах.
+    """
+    allowed = set(manifest.get("files") or {})
+    removed = 0
+    for base in (APP_ROOT / "src" / "eirven_ai", APP_ROOT / "scripts", APP_ROOT / "assets"):
+        if not base.is_dir():
+            continue
+        for path in sorted(base.rglob("*"), reverse=True):
+            try:
+                if "__pycache__" in path.parts:
+                    continue
+                rel = path.relative_to(APP_ROOT).as_posix()
+                if path.is_file() and rel not in allowed:
+                    path.unlink()
+                    removed += 1
+                elif path.is_dir() and not any(path.iterdir()):
+                    path.rmdir()
+            except OSError:
+                continue
+    return removed
+
+
 def _materialize_embedded_application() -> None:
     """Install the one-file download's application payload per user.
 
     Earlier public EXEs were launchers for a neighbouring source ZIP.  The direct
     website download now embeds that payload in PyInstaller and refreshes only
     program files here; owner data, credentials, models and ``.env`` stay intact.
+
+    r72-k5: раскладка идёт только когда версия действительно сменилась. Раньше
+    при КАЖДОМ запуске, ещё до окна, копировались все папки программы и сам exe,
+    а кэш байткода стирался — и сервер потом заново компилировал все модули.
+    Отсюда долгий запуск. Теперь при совпадении версии это доли секунды.
     """
     if not FROZEN:
         return
@@ -346,6 +423,20 @@ def _materialize_embedded_application() -> None:
         if installed.is_dir():
             return
         raise RuntimeError("В EXE отсутствует встроенный пакет EIRVEN. Скачай файл заново с официального сайта.")
+    manifest, payload_id = _load_release_manifest(ROOT)
+    installed_exe = APP_ROOT / "EIRVEN.exe"
+    running_exe = Path(sys.executable).resolve()
+    if manifest is not None and _payload_is_current(manifest, payload_id):
+        exe_ok = installed_exe.is_file()
+        if exe_ok and installed_exe.resolve() != running_exe:
+            try:
+                exe_ok = installed_exe.stat().st_size == running_exe.stat().st_size
+            except OSError:
+                exe_ok = False
+        if exe_ok:
+            _trace("MATERIALIZE_SKIPPED", build=CURRENT_BUILD, payload=payload_id)
+            return
+    started = time.monotonic()
     APP_ROOT.mkdir(parents=True, exist_ok=True)
     for name in EMBEDDED_DIRECTORIES:
         source = ROOT / name
@@ -353,6 +444,7 @@ def _materialize_embedded_application() -> None:
             _replace_program_tree(source, APP_ROOT / name)
     # Кэш байткода и в корне установки — там тоже могли остаться следы прошлых версий.
     _purge_bytecode(APP_ROOT / "src")
+    removed = _prune_foreign_files(manifest) if manifest is not None else 0
     for name in EMBEDDED_FILES:
         source = ROOT / name
         if source.is_file():
@@ -362,8 +454,11 @@ def _materialize_embedded_application() -> None:
                 shutil.copy2(source, target)
             except OSError as file_error:
                 _trace("MATERIALIZE_FILE_LOCKED", file=name, reason=str(file_error)[:300])
-    installed_exe = APP_ROOT / "EIRVEN.exe"
-    running_exe = Path(sys.executable).resolve()
+    if manifest is not None:
+        try:
+            shutil.copy2(ROOT / RELEASE_MANIFEST, APP_ROOT / RELEASE_MANIFEST)
+        except OSError:
+            pass
     if installed_exe.resolve() != running_exe:
         pending = installed_exe.with_suffix(".exe.new")
         try:
@@ -379,10 +474,37 @@ def _materialize_embedded_application() -> None:
                 pending.unlink()
             except OSError:
                 pass
+    # Отметки прошлых версий убираем: одна отметка .payload вместо файла на каждую сборку.
+    for stale in APP_ROOT.glob(".payload-*"):
+        try:
+            stale.unlink()
+        except OSError:
+            pass
     try:
-        (APP_ROOT / ".payload-r72-k4").write_text("2.4.0 r72-k4\n", encoding="ascii")
+        (APP_ROOT / PAYLOAD_MARKER).write_text(f"2.4.0 {CURRENT_BUILD} {payload_id or 'no-manifest'}\n", encoding="ascii")
     except OSError:
         pass
+    _trace("MATERIALIZE_DONE", build=CURRENT_BUILD, payload=payload_id, removed_foreign=removed,
+           seconds=round(time.monotonic() - started, 2))
+
+
+def _adopt_compatible_install_marker(marker: Path) -> bool:
+    """Перенести отметку установки прошлой сборки с тем же набором зависимостей."""
+    for name in COMPATIBLE_INSTALL_MARKERS:
+        previous = APP_ROOT / name
+        if not previous.is_file():
+            continue
+        try:
+            marker.write_text(f"перенесено из {name}: набор зависимостей тот же\n", encoding="utf-8")
+        except OSError:
+            return False
+        try:
+            previous.unlink()
+        except OSError:
+            pass
+        _trace("INSTALL_MARKER_ADOPTED", previous=name, current=marker.name)
+        return True
+    return False
 
 
 def _env_wants_full_access() -> bool:
@@ -793,6 +915,18 @@ def _ensure_ollama_running(timeout: float = 35.0) -> tuple[bool, str]:
             [executable, "serve"], cwd=str(APP_ROOT), stdout=log, stderr=log,
             stdin=subprocess.DEVNULL, creationflags=flags,
         )
+    except OSError as exc:
+        # Понятная причина вместо сырого кода Windows: чаще всего это повреждённая
+        # установка Ollama или блокировка антивирусом.
+        hints = {
+            1392: "файл Ollama повреждён или не читается — переустанови Ollama или проверь антивирус",
+            225: "антивирус блокирует ollama.exe",
+            5: "Windows отказала в доступе к ollama.exe (часто это антивирус)",
+            193: "ollama.exe повреждён",
+            2: "ollama.exe не найден",
+        }
+        code = int(getattr(exc, "winerror", 0) or 0)
+        return False, f"Не удалось запустить Ollama: {hints.get(code) or exc}"
     except Exception as exc:
         return False, f"Не удалось запустить рабочий контур: {exc}"
     deadline = time.monotonic() + max(5.0, timeout)
@@ -1045,22 +1179,10 @@ def _sweep_abandoned_instances() -> None:
             proc.terminate()
         except Exception:
             continue
-    # Remove bundle folders no longer owned by a live process. PyInstaller only
-    # cleans up its own; folders from killed runs accumulate indefinitely.
-    try:
-        import shutil
-        import tempfile
-        current = str(getattr(sys, "_MEIPASS", "") or "")
-        temp_root = Path(tempfile.gettempdir())
-        for folder in temp_root.glob("_MEI*"):
-            if not folder.is_dir() or str(folder) == current:
-                continue
-            try:
-                shutil.rmtree(folder, ignore_errors=True)
-            except Exception:
-                continue
-    except Exception:
-        pass
+    # Папки распаковки здесь больше не удаляем. Раньше удалялись все чужие _MEI
+    # без проверки, и у соседней, только что запущенной копии Эрви пропадал
+    # встроенный пакет. Этим занимается _clean_orphaned_bundles: удаляет только
+    # действительно брошенные папки.
 
 
 def _clean_orphaned_bundles() -> None:
@@ -1547,7 +1669,10 @@ class LauncherWindow:
             # занимал до 8 секунд — а искал то, чего нет. Если на порту Эрви никто
             # не отвечает, при автозапуске его пропускаем.
             _phase_started = time.monotonic()
-            _scan_processes = bool(port) or not _autostart_requested()
+            # Поиск запущенных копий через WMI занимает до 8 секунд. Нужен он, только
+            # если на порту Эрви кто-то отвечает: иначе брошенные процессы и так
+            # уберёт быстрая проверка перед выбором порта.
+            _scan_processes = bool(port)
             if _scan_processes:
                 supervisors, servers = _eirven_runtime_counts()
             else:
@@ -1587,6 +1712,8 @@ class LauncherWindow:
             # core checks and shortcut setup have completed. The launcher must never
             # fabricate completion from a working Python import alone.
             marker = APP_ROOT / INSTALL_MARKER
+            if python is not None and not marker.exists():
+                _adopt_compatible_install_marker(marker)
             # При автозапуске установку не запускаем, если Эрви уже стоит (Python на
             # месте). Маркер меняется с каждой сборкой, и первый запуск после
             # обновления шёл в полную установку — а при входе в Windows сеть и
@@ -1696,12 +1823,9 @@ class LauncherWindow:
                 pass
 
             _phase_started = time.monotonic()
-            if _autostart_requested():
-                # Удаление старой распаковки — сотни мегабайт файлов. При входе в
-                # Windows запуск его не ждёт: чистка идёт в фоне.
-                threading.Thread(target=_clean_orphaned_bundles, daemon=True, name="eirven-cleanup").start()
-            else:
-                _clean_orphaned_bundles()
+            # Удаление старых распаковок — сотни мегабайт файлов. Запуск его не ждёт:
+            # чистка всегда идёт в фоне.
+            threading.Thread(target=_clean_orphaned_bundles, daemon=True, name="eirven-cleanup").start()
             port = _find_existing_eirven()
             if port is None:
                 # Nothing is answering, so anything still running is abandoned.
@@ -1713,14 +1837,11 @@ class LauncherWindow:
                 port = _choose_free_port()
             _trace("LAUNCHER_PHASE", phase="подготовка порта", seconds=round(time.monotonic() - _phase_started, 2))
             self.set("Настраиваю доступ с телефона", f"Локальная сеть · порт {port}")
-            if _autostart_requested():
-                # Правило брандмауэра нужно, когда подключится телефон, а не для старта
-                # сервера. При входе в Windows не держим на нём запуск.
-                threading.Thread(target=_ensure_mobile_firewall, args=(python, port), daemon=True,
-                                 name="eirven-firewall-boot").start()
-                firewall_ready = True
-            else:
-                firewall_ready = _ensure_mobile_firewall(python, port)
+            # Правило брандмауэра нужно, когда подключится телефон, а не для старта
+            # сервера. Запуск на нём не держим — ни при входе в Windows, ни при обычном.
+            threading.Thread(target=_ensure_mobile_firewall, args=(python, port), daemon=True,
+                             name="eirven-firewall").start()
+            firewall_ready = True
             detail = f"127.0.0.1:{port}"
             if not firewall_ready:
                 detail += " · телефону может мешать Windows Firewall"

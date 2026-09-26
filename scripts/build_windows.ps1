@@ -1,11 +1,15 @@
-﻿# EIRVEN AI — 2.4.0
-# Copyright (c) 2026 Даниил Павлов. Все права защищены. / All rights reserved.
-# Лицензия: EIRVEN Non-Commercial License — см. файл LICENSE.
-# Обязательна видимая подпись «На базе Эрви». Скрывать её запрещено (см. LICENSE).
-# EIRVEN-LICENSE-HEADER
-$ErrorActionPreference = "Stop"
+﻿$ErrorActionPreference = "Stop"
+try { [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false) } catch {}
 $Root = Split-Path -Parent $PSScriptRoot
 Set-Location -LiteralPath $Root
+
+# Сначала — уборка: модули и скрипты прошлых версий, старые exe, .spec и отметки
+# уходят в _old_files_backup. Данные, .venv и модели не трогаются.
+$CleanScript = Join-Path $PSScriptRoot "clean_old_files.ps1"
+if (Test-Path -LiteralPath $CleanScript) {
+    Write-Host "Cleaning files that do not belong to this version ..." -ForegroundColor Cyan
+    & powershell -NoProfile -ExecutionPolicy Bypass -File $CleanScript | Out-Host
+}
 $IconPath = (Resolve-Path (Join-Path $Root "assets\eirven.ico")).Path
 $VersionPath = (Resolve-Path (Join-Path $Root "assets\eirven-version.txt")).Path
 $BuildName = "EIRVEN-AI"
@@ -109,19 +113,43 @@ $HeavyModules = @(
 $HeavyExcludes = @()
 foreach ($m in $HeavyModules) { $HeavyExcludes += @('--exclude-module', $m) }
 
-# Папка src попадает в exe как данные для раскладки. Собираем её через копию: без
-# кэша байткода и без вложенной src\src — случайной второй копии, которая целиком
-# попадала в exe ещё раз (шрифт эмодзи лежал в отчёте дважды).
-$StageSrc = Join-Path $Root "build\stage_src"
-if (Test-Path -LiteralPath $StageSrc) { Remove-Item -LiteralPath $StageSrc -Recurse -Force }
-Copy-Item -LiteralPath (Join-Path $Root "src") -Destination $StageSrc -Recurse
-$NestedSrc = Join-Path $StageSrc "src"
-if (Test-Path -LiteralPath $NestedSrc) {
-    Write-Host "Skipping nested src\src (stray duplicate copy) from the EXE payload" -ForegroundColor Yellow
-    Remove-Item -LiteralPath $NestedSrc -Recurse -Force
+# В exe попадают ТОЛЬКО файлы текущей версии — по списку release_manifest.json,
+# со сверкой SHA-256. Раньше папки src, scripts и assets уходили в exe целиком,
+# со всем, что в них накопилось: модулями прошлых версий, служебными файлами и
+# даже чужими данными (src\data). У людей после установки это выглядело как
+# «признаки старой версии». Файл, который не совпал с манифестом, останавливает
+# сборку: значит, патч распакован не полностью или поверх лёг старый архив.
+$ManifestPath = Join-Path $Root "release_manifest.json"
+if (-not (Test-Path -LiteralPath $ManifestPath)) {
+    throw "release_manifest.json not found. Extract the whole patch archive into $Root and run the build again."
 }
-Get-ChildItem -LiteralPath $StageSrc -Recurse -Directory -Filter "__pycache__" -ErrorAction SilentlyContinue |
-    Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+$Manifest = Get-Content -LiteralPath $ManifestPath -Raw -Encoding UTF8 | ConvertFrom-Json
+$Stage = Join-Path $Root "build\stage"
+if (Test-Path -LiteralPath $Stage) { Remove-Item -LiteralPath $Stage -Recurse -Force }
+$Problems = New-Object System.Collections.Generic.List[string]
+$Sha = [System.Security.Cryptography.SHA256]::Create()
+$StagedCount = 0
+foreach ($prop in $Manifest.files.PSObject.Properties) {
+    $rel = $prop.Name
+    $srcPath = Join-Path $Root ($rel.Replace('/', '\'))
+    if (-not (Test-Path -LiteralPath $srcPath -PathType Leaf)) { $Problems.Add("missing: $rel"); continue }
+    $bytes = [System.IO.File]::ReadAllBytes($srcPath)
+    $hash = -join ($Sha.ComputeHash($bytes) | ForEach-Object { $_.ToString("x2") })
+    if ($hash -ne [string]$prop.Value.sha256) { $Problems.Add("not from $($Manifest.build): $rel"); continue }
+    $top = $rel.Split('/')[0]
+    if (@("src", "scripts", "assets") -contains $top) {
+        $dst = Join-Path $Stage ($rel.Replace('/', '\'))
+        New-Item -ItemType Directory -Path (Split-Path -Parent $dst) -Force | Out-Null
+        [System.IO.File]::WriteAllBytes($dst, $bytes)
+        $StagedCount++
+    }
+}
+$Sha.Dispose()
+if ($Problems.Count) {
+    $list = ($Problems | Select-Object -First 15) -join "`n  "
+    throw "The source folder does not match build $($Manifest.build) ($($Problems.Count) file(s)):`n  $list`nExtract the whole patch archive over $Root again (replace all files) and rerun the build."
+}
+Write-Host "Staged $StagedCount program files of build $($Manifest.build) (verified by SHA-256)" -ForegroundColor Green
 
 & .\.venv\Scripts\python.exe -m PyInstaller `
     --noconfirm `
@@ -133,9 +161,10 @@ Get-ChildItem -LiteralPath $StageSrc -Recurse -Directory -Filter "__pycache__" -
     --hidden-import numpy `
     --hidden-import psutil `
     @HeavyExcludes `
-    --add-data "$StageSrc;src" `
-    --add-data "$Root\scripts;scripts" `
-    --add-data "$Root\assets;assets" `
+    --add-data "$Stage\src;src" `
+    --add-data "$Stage\scripts;scripts" `
+    --add-data "$Stage\assets;assets" `
+    --add-data "$ManifestPath;." `
     --add-data "$Root\.env.example;." `
     --add-data "$Root\launcher.py;." `
     --add-data "$Root\pyproject.toml;." `
@@ -148,6 +177,7 @@ Get-ChildItem -LiteralPath $StageSrc -Recurse -Directory -Filter "__pycache__" -
     --add-data "$Root\BUILD_INFO.json;." `
     --add-data "$Root\EIRVEN_VERSION.txt;." `
     --add-data "$Root\LICENSE;." `
+    --add-data "$Root\NOTICE.md;." `
     --add-data "$Root\README.md;." `
     --add-data "$Root\SECURITY.md;." `
     --add-data "$Root\THIRD_PARTY_NOTICES.md;." `

@@ -1,8 +1,3 @@
-REM EIRVEN AI — 2.4.0
-REM Copyright (c) 2026 Даниил Павлов. Все права защищены. / All rights reserved.
-REM Лицензия: EIRVEN Non-Commercial License — см. файл LICENSE.
-REM Обязательна видимая подпись «На базе Эрви». Скрывать её запрещено (см. LICENSE).
-REM EIRVEN-LICENSE-HEADER
 @echo off
 title Uninstall EIRVEN
 cd /d "%~dp0"

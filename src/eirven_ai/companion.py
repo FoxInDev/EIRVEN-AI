@@ -1,8 +1,3 @@
-# EIRVEN AI — 2.4.0
-# Copyright (c) 2026 Даниил Павлов. Все права защищены. / All rights reserved.
-# Лицензия: EIRVEN Non-Commercial License — см. файл LICENSE.
-# Обязательна видимая подпись «На базе Эрви». Скрывать её запрещено (см. LICENSE).
-# EIRVEN-LICENSE-HEADER
 from __future__ import annotations
 
 import math
@@ -15,6 +10,163 @@ from typing import Any, Callable
 from .database import Database
 from .identity import CANONICAL_ASSISTANT_NAME, IdentityService
 from .system_browser import open_url as open_system_url, open_app_window
+
+
+# ---------------------------------------------------------------------------
+# Картинки сферы для окна на рабочем столе.
+#
+# Окно сферы прозрачно только по одному цвету (#010204). Полупрозрачность Tk не
+# умеет: любой полупрозрачный пиксель он смешивает с этим почти чёрным цветом, и
+# вокруг сферы появлялась тёмная «пила». У картинок эмоций, кроме того, вокруг
+# шара осталась аура, «лужа» под ним, обрывки вихря и отдельные точки фона — их
+# маска «видно / не видно» тоже тащила на рабочий стол. Поэтому у эмоций теперь
+# остаётся ровно круг самого шара (у «сна» — ещё «z Z» над ним), а все края
+# строго непрозрачные или строго прозрачные.
+# ---------------------------------------------------------------------------
+
+# Выверенные круги шара на картинках эмоций: центр x, центр y, радиус — в долях
+# кадра. Для каждой картинки это самый большой круг, внутри которого нет дыр фона,
+# а край — яркий обод шара, без тёмной ауры. У «thinking» вихрь сверху справа
+# сбивает автоматическую подгонку, поэтому круги заданы явно. Ключ — начало SHA-1 файла: если картинку заменят, сработает
+# автоматическая подгонка по самой картинке.
+_KNOWN_SPHERE_CIRCLES: dict[str, tuple[float, float, float]] = {
+    "cb5edc998d38d92e": (0.502, 0.503, 0.393),  # joy
+    "b4d5dd0de207666a": (0.566, 0.497, 0.369),  # surprise
+    "80e30ee431ac0b40": (0.480, 0.495, 0.328),  # thinking
+    "c0ded025137a7b88": (0.515, 0.500, 0.417),  # focused
+    "000e3892b980794a": (0.506, 0.469, 0.361),  # laugh
+    "d69e585121867f5d": (0.474, 0.560, 0.295),  # sleep
+}
+
+
+def _file_key(path: Path) -> str:
+    import hashlib
+    try:
+        return hashlib.sha1(path.read_bytes()).hexdigest()[:16]
+    except OSError:
+        return ""
+
+
+def _hard_alpha(image: Any, threshold: int = 128) -> Any:
+    """Края строго: пиксель либо непрозрачен, либо прозрачен полностью."""
+    image = image.convert("RGBA")
+    image.putalpha(image.getchannel("A").point(lambda v: 255 if v >= threshold else 0))
+    return image
+
+
+def _components(mask: Any) -> list[list[tuple[int, int]]]:
+    from collections import deque
+    height, width = mask.shape
+    seen = [[False] * width for _ in range(height)]
+    groups: list[list[tuple[int, int]]] = []
+    for y0, x0 in zip(*mask.nonzero()):
+        y0, x0 = int(y0), int(x0)
+        if seen[y0][x0]:
+            continue
+        queue = deque([(y0, x0)])
+        seen[y0][x0] = True
+        group = []
+        while queue:
+            y, x = queue.popleft()
+            group.append((y, x))
+            for ny, nx in ((y - 1, x), (y + 1, x), (y, x - 1), (y, x + 1)):
+                if 0 <= ny < height and 0 <= nx < width and mask[ny, nx] and not seen[ny][nx]:
+                    seen[ny][nx] = True
+                    queue.append((ny, nx))
+        groups.append(group)
+    return groups
+
+
+def _fit_sphere_circle(image: Any, work: int = 96) -> tuple[float, float, float]:
+    """Круг шара по самой картинке — для новых картинок, которых нет в таблице выше.
+
+    Шар — самая яркая сплошная часть кадра. Нижняя часть контура не учитывается:
+    там подставки, отражения и «лужи». Точки, далеко отстоящие от первой подгонки
+    (вихри у края), отбрасываются перед окончательной.
+    """
+    import numpy as np
+    from PIL import Image
+
+    small = image.convert("RGBA").resize((work, work), Image.LANCZOS)
+    arr = np.asarray(small).astype(np.int16)
+    body = (arr[..., 3] >= 200) & (arr[..., :3].max(axis=-1) >= 110)
+    # Заполнить дыры: тёмная середина шара — тоже шар.
+    outside = ~body
+    reach = np.zeros_like(body)
+    reach[0, :] = outside[0, :]; reach[-1, :] = outside[-1, :]
+    reach[:, 0] |= outside[:, 0]; reach[:, -1] |= outside[:, -1]
+    while True:
+        grown = reach.copy()
+        grown[1:, :] |= reach[:-1, :]; grown[:-1, :] |= reach[1:, :]
+        grown[:, 1:] |= reach[:, :-1]; grown[:, :-1] |= reach[:, 1:]
+        grown &= outside
+        if (grown == reach).all():
+            break
+        reach = grown
+    body = ~reach
+    groups = _components(body)
+    if not groups:
+        return .5, .5, .42
+    main = max(groups, key=len)
+    pts = np.array(main, dtype=float)
+    cy0, cx0 = pts.mean(axis=0)
+    r0 = math.sqrt(len(main) / math.pi)
+    mask = np.zeros_like(body)
+    mask[pts[:, 0].astype(int), pts[:, 1].astype(int)] = True
+    inner = mask.copy()
+    inner[1:, :] &= mask[:-1, :]; inner[:-1, :] &= mask[1:, :]
+    inner[:, 1:] &= mask[:, :-1]; inner[:, :-1] &= mask[:, 1:]
+    edge = np.argwhere(mask & ~inner).astype(float)
+    ys, xs = edge[:, 0] + .5, edge[:, 1] + .5
+    upper = ys <= cy0 + .45 * r0
+    if upper.sum() >= 12:
+        xs, ys = xs[upper], ys[upper]
+
+    def fit(x: Any, y: Any) -> tuple[float, float, float]:
+        a = np.column_stack([x, y, np.ones_like(x)])
+        (d, e, f), *_ = np.linalg.lstsq(a, -(x * x + y * y), rcond=None)
+        cx, cy = -d / 2, -e / 2
+        return float(cx), float(cy), float(math.sqrt(max(cx * cx + cy * cy - f, 1e-6)))
+
+    cx, cy, r = fit(xs, ys)
+    for _ in range(3):
+        resid = np.abs(np.hypot(xs - cx, ys - cy) - r)
+        keep = resid <= max(1.0, 2.5 * float(np.median(resid)))
+        if keep.sum() < 12 or keep.all():
+            break
+        xs, ys = xs[keep], ys[keep]
+        cx, cy, r = fit(xs, ys)
+    if not (.6 * r0 <= r <= 1.25 * r0):
+        cx, cy, r = cx0 + .5, cy0 + .5, r0
+    # Небольшой запас внутрь: у края картинки встречаются дыры фона и тёмная аура.
+    return cx / work, cy / work, .97 * r / work
+
+
+def _emotion_sprite(image: Any, circle: tuple[float, float, float], frame: int,
+                    keep_above: bool = False) -> Any:
+    """Шар эмоции без фона: ровный круг, края строго непрозрачные или прозрачные."""
+    import numpy as np
+    from PIL import Image
+
+    fx, fy, fr = circle
+    out = image.convert("RGBA").resize((frame, frame), Image.LANCZOS)
+    arr = np.asarray(out).copy()
+    yy, xx = np.mgrid[0:frame, 0:frame]
+    cx, cy, r = fx * frame, fy * frame, fr * frame
+    dist = np.hypot(xx + .5 - cx, yy + .5 - cy)
+    keep = dist <= r
+    if keep_above:
+        # Отдельные детали над шаром — «z Z» у сна. Аура, «лужа» и точки фона
+        # отсюда не проходят: они или касаются шара, или лежат ниже, или мелкие.
+        solid = ((arr[..., 3] >= 128) & (arr[..., :3].max(axis=-1) >= 60)
+                 & (dist > r * 1.12) & (yy + .5 < cy - r * .35))
+        min_area = max(10, int(frame * frame * .0012))
+        for group in _components(solid):
+            if len(group) >= min_area:
+                ys, xs = zip(*group)
+                keep[list(ys), list(xs)] = True
+    arr[..., 3] = np.where(keep & (arr[..., 3] >= 96), 255, 0).astype(np.uint8)
+    return Image.fromarray(arr, "RGBA")
 
 
 def _work_area_at(x: int, y: int) -> tuple[int, int, int, int] | None:
@@ -316,11 +468,27 @@ class DesktopCompanion:
         self._log("COMPANION_PLACED", x=anchor["x"], y=anchor["y"], w=win_w, h=win_h,
                   screen_h=screen_h, scale=round(ui_scale, 2))
 
+        # Центр сферы в окне (в базовых единицах — масштаб применяется в конце кадра).
+        orb_cx, orb_cy = 82.0, 112.0
         texture = None
+        scaled_size = max(1, int(round(sphere_size * ui_scale)))
+        # Шар на основной картинке: центр и радиус в долях кадра. По нему
+        # подгоняются картинки эмоций, чтобы при смене эмоции сфера не прыгала и
+        # не меняла размер (раньше «сон» был заметно меньше, «сосредоточенность» — больше).
+        base_circle = (.5, .5, .41)
         try:
             image_path = Path(__file__).resolve().parent / "web" / "eirven-orb.png"
-            scaled_size = max(1, int(round(sphere_size * ui_scale)))
             image = Image.open(image_path).convert("RGBA")
+            try:
+                alpha = image.getchannel("A")
+                box = alpha.point(lambda v: 255 if v >= 128 else 0).getbbox()
+                area = sum(alpha.histogram()[128:])
+                if box and area:
+                    width, height = image.size
+                    base_circle = ((box[0] + box[2]) / 2 / width, (box[1] + box[3]) / 2 / height,
+                                   math.sqrt(area / math.pi) / width)
+            except Exception:
+                pass
             # Глаза — как в окне Эрви. В самой картинке их нет: в окне их рисуют
             # стили поверх, поэтому сфера на рабочем столе была без глаз. Рисуем в
             # полном размере картинки и только потом уменьшаем — так блики не рассыпаются.
@@ -330,35 +498,44 @@ class DesktopCompanion:
             except Exception as exc:
                 self._log("COMPANION_EYES_FAILED", error=str(exc)[:200])
             image = image.resize((scaled_size, scaled_size), Image.LANCZOS)
-            texture = ImageTk.PhotoImage(image)
+            # Края — строго: полупрозрачные пиксели Tk смешал бы с почти чёрным
+            # цветом прозрачности окна, и вокруг сферы вставала тёмная «пила».
+            texture = ImageTk.PhotoImage(_hard_alpha(image))
         except Exception:
             texture = None
 
-        # Картинки эмоций. Сфера в них занимает около трёх четвертей кадра — остальное
-        # аура, светящийся круг и «z Z», — поэтому кадр чуть крупнее прежней сферы,
-        # чтобы сам шар остался того же размера. Глаза на них не рисуем: лицо у каждой
-        # эмоции своё. Не нашлось картинок — показываем прежнюю сферу с глазами.
-        emotion_textures: dict[str, Any] = {}
+        # Картинки эмоций: у каждой остаётся ровно круг самого шара (у «сна» ещё
+        # «z Z» над ним), подогнанный по размеру и центру к основной сфере.
+        # Не нашлось картинок — показываем основную сферу с глазами.
+        emotion_sprites: dict[str, tuple[Any, float, float]] = {}
         try:
             emo_dir = Path(__file__).resolve().parent / "web" / "emotions"
-            emo_size = max(1, int(round(sphere_size * ui_scale / 0.75)))
+            sphere_px = base_circle[2] * scaled_size
+            target_x = orb_cx * ui_scale + (base_circle[0] - .5) * scaled_size
+            target_y = orb_cy * ui_scale + (base_circle[1] - .5) * scaled_size
             for emo_name in ("joy", "surprise", "thinking", "focused", "laugh", "sleep"):
-                # Версии для рабочего стола: окно сферы прозрачно только по одному
-                # цвету, полупрозрачность Tk не умеет — любой полупрозрачный пиксель
-                # смешивался с почти чёрным фоном окна, и за сферой вставало чёрное
-                # пятно. В desk/ фон снаружи контура полностью прозрачен, а всё внутри,
-                # включая тёмную середину сферы, непрозрачно.
                 emo_path = emo_dir / "desk" / f"{emo_name}.png"
                 if not emo_path.is_file():
                     emo_path = emo_dir / f"{emo_name}.png"
-                if emo_path.is_file():
-                    emo_img = Image.open(emo_path).convert("RGBA").resize((emo_size, emo_size), Image.LANCZOS)
-                    # Растягивание сглаживает края и снова рождает полупрозрачные
-                    # пиксели — а их Tk смешал бы с чёрным фоном окна. Края строго:
-                    # либо видно, либо нет.
-                    emo_img.putalpha(emo_img.getchannel("A").point(lambda v: 255 if v >= 128 else 0))
-                    emotion_textures[emo_name] = ImageTk.PhotoImage(emo_img)
-            self._log("COMPANION_EMOTIONS", loaded=sorted(emotion_textures))
+                if not emo_path.is_file():
+                    continue
+                emo_src = Image.open(emo_path).convert("RGBA")
+                circle = _KNOWN_SPHERE_CIRCLES.get(_file_key(emo_path))
+                if circle is None:
+                    try:
+                        circle = _fit_sphere_circle(emo_src)
+                    except Exception:
+                        circle = (.5, .5, .375)
+                frame = max(8, int(round(sphere_px / max(.05, circle[2]))))
+                try:
+                    sprite = _emotion_sprite(emo_src, circle, frame, keep_above=(emo_name == "sleep"))
+                except Exception as exc:
+                    self._log("COMPANION_EMOTION_CUTOUT_FAILED", emotion=emo_name, error=str(exc)[:200])
+                    sprite = _hard_alpha(emo_src.resize((frame, frame), Image.LANCZOS))
+                left = (target_x - circle[0] * frame) / ui_scale
+                top = (target_y - circle[1] * frame) / ui_scale
+                emotion_sprites[emo_name] = (ImageTk.PhotoImage(sprite), left, top)
+            self._log("COMPANION_EMOTIONS", loaded=sorted(emotion_sprites))
         except Exception as exc:
             self._log("COMPANION_EMOTIONS_FAILED", error=str(exc)[:200])
 
@@ -444,8 +621,8 @@ class DesktopCompanion:
             activity = max(input_level, 0.72 if active else 0.08, 0.64 if speaking else 0.0) * intensity_factor
 
             canvas.delete("all")
-            cx = 82.0
-            cy = 112.0
+            cx = orb_cx
+            cy = orb_cy
             pulse = (math.sin(phase * (1.35 + activity * 2.4)) + 1) / 2
 
             # Окно больше не двигается само. Раньше оно каждый кадр сдвигалось на
@@ -456,9 +633,11 @@ class DesktopCompanion:
             # Keep the desktop sprite truly background-free.  A blurred, partially
             # transparent halo is composited against Tk's chroma-key colour on Windows
             # and becomes the large dark disk that used to sit behind the mini sphere.
-            current_tex = emotion_textures.get(self._emotion_now()) or texture
-            if current_tex is not None:
-                canvas.create_image(cx, cy, image=current_tex)
+            current_sprite = emotion_sprites.get(self._emotion_now())
+            if current_sprite is not None:
+                canvas.create_image(current_sprite[1], current_sprite[2], image=current_sprite[0], anchor="nw")
+            elif texture is not None:
+                canvas.create_image(cx, cy, image=texture)
             else:
                 core = sphere_size * (.38 + .018 * math.sin(phase * 1.2) + activity * .04)
                 canvas.create_oval(cx-core, cy-core, cx+core, cy+core, fill="#13265a", outline="#8cf6ff", width=2)

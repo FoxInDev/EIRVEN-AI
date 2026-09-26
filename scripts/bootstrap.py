@@ -1,8 +1,3 @@
-# EIRVEN AI — 2.4.0
-# Copyright (c) 2026 Даниил Павлов. Все права защищены. / All rights reserved.
-# Лицензия: EIRVEN Non-Commercial License — см. файл LICENSE.
-# Обязательна видимая подпись «На базе Эрви». Скрывать её запрещено (см. LICENSE).
-# EIRVEN-LICENSE-HEADER
 from __future__ import annotations
 
 import json
@@ -57,6 +52,7 @@ SRC = ROOT / "src"
 sys.path.insert(0, str(SRC))
 
 from eirven_ai.hardware import detect_hardware  # noqa: E402
+from eirven_ai.version import APP_BUILD, APP_VERSION  # noqa: E402
 
 
 def _windows_exe_file_version(path: Path) -> str:
@@ -118,6 +114,59 @@ class InstallerError(RuntimeError):
     pass
 
 
+def _oem_encoding() -> str:
+    if os.name != "nt":
+        return "utf-8"
+    try:
+        import ctypes
+
+        return f"cp{int(ctypes.windll.kernel32.GetOEMCP())}"
+    except Exception:
+        return "cp866"
+
+
+def _decode_console(data: bytes | str | None) -> str:
+    """Текст из вывода консольной программы — в той кодировке, в которой он написан.
+
+    Дочерние Python-процессы установщика пишут в UTF-8, а PowerShell и системные
+    утилиты Windows — в кодировке консоли (у русской Windows это cp866). Раньше
+    всё читалось как UTF-8, и русские сообщения об ошибках превращались в
+    «кракозябры»: настоящую причину сбоя было не прочитать ни человеку, ни нам.
+    Текст в cp866 почти никогда не бывает правильным UTF-8, поэтому порядок
+    «сначала UTF-8, потом кодировка консоли» определяет её надёжно.
+    """
+    if data is None:
+        return ""
+    if isinstance(data, str):
+        return data
+    try:
+        return data.decode("utf-8")
+    except UnicodeDecodeError:
+        pass
+    for encoding in (_oem_encoding(), "cp1251"):
+        try:
+            return data.decode(encoding)
+        except (UnicodeDecodeError, LookupError):
+            continue
+    return data.decode("utf-8", errors="replace")
+
+
+def _split_console_lines(buffer: bytes) -> tuple[list[str], bytes]:
+    """Разбить накопленный вывод на готовые строки; хвост без перевода строки вернуть.
+
+    Строкой считается и кусок, закрытый одним возвратом каретки: так пишут
+    индикаторы прогресса (скачивание Ollama, pip), и их видно сразу, а не в конце.
+    """
+    parts = re.split(rb"[\r\n]", buffer)
+    tail = parts.pop()
+    lines: list[str] = []
+    for piece in parts:
+        text = re.sub(r"\x1b\[[0-9;]*[A-Za-z]", "", _decode_console(piece)).strip()
+        if text:
+            lines.append(text)
+    return lines, tail
+
+
 def _find_ollama_executable() -> str:
     found = shutil.which("ollama") or shutil.which("ollama.exe")
     if found:
@@ -177,58 +226,163 @@ def _cpu_lacks_avx() -> bool:
 
 _OLLAMA_LAST_ERROR = ""
 
+# Коды Windows, с которыми не запускается ollama.exe, — человеческим языком.
+_OLLAMA_START_HINTS = {
+    1392: "Windows сообщает, что файл Ollama повреждён или не читается («Файл или папка повреждены»).",
+    193: "Windows не распознаёт ollama.exe как программу — файл повреждён.",
+    225: "Антивирус считает ollama.exe угрозой и не даёт его запустить.",
+    1260: "Запуск ollama.exe запрещён групповой политикой Windows.",
+    4551: "Запуск ollama.exe запрещён политикой целостности кода Windows.",
+    5: "Windows отказала в доступе к ollama.exe (часто так срабатывает антивирус).",
+    2: "ollama.exe не найден на своём месте.",
+    32: "ollama.exe занят другим процессом (идёт установка или обновление Ollama).",
+}
 
-def _prepare_ollama_runtime() -> str:
+
+def _ollama_advice() -> str:
+    local = os.environ.get("LOCALAPPDATA", "")
+    folder = str(Path(local) / "Programs" / "Ollama") if local else "папку Ollama"
+    return (
+        "Нажми «Повторить» — Эрви проверит Ollama и при необходимости переустановит её. "
+        f"Если ошибка повторится, добавь {folder} в исключения антивируса "
+        "или установи Ollama вручную с ollama.com и снова нажми «Повторить»."
+    )
+
+
+def _script_failure_reason(stdout: str, stderr: str) -> str:
+    """Чистая причина из вывода ensure_ollama.ps1 — без служебных полей PowerShell."""
+    for text in (stderr, stdout):
+        for line in reversed(text.splitlines()):
+            line = line.strip()
+            if line.startswith("EIRVEN_ERROR:"):
+                return line.split(":", 1)[1].strip()
+    tail = (stderr or "").strip() or (stdout or "").strip()
+    return tail[-600:]
+
+
+def _start_ollama_serve(executable: str) -> tuple[bool, int, str]:
+    """Запустить «ollama serve» в фоне. (успех, код Windows, текст ошибки).
+
+    Все три стандартных потока — в файл или в никуда. Унаследованный канал вывода
+    установщика сервер держал бы открытым всю свою жизнь, и чтение вывода
+    зависало бы до тайм-аута.
+    """
+    log_handle = None
+    try:
+        logs = ROOT / "logs"
+        logs.mkdir(parents=True, exist_ok=True)
+        log_handle = (logs / "ollama-serve.log").open("ab")
+    except Exception:
+        log_handle = None
+    try:
+        flags = 0
+        if os.name == "nt":
+            flags = subprocess.CREATE_NO_WINDOW | subprocess.CREATE_NEW_PROCESS_GROUP
+        subprocess.Popen(
+            [executable, "serve"], cwd=str(ROOT),
+            stdin=subprocess.DEVNULL,
+            stdout=log_handle or subprocess.DEVNULL,
+            stderr=log_handle or subprocess.DEVNULL,
+            creationflags=flags, close_fds=True,
+        )
+        return True, 0, ""
+    except OSError as exc:
+        return False, int(getattr(exc, "winerror", 0) or 0), str(exc.strerror or exc)
+    finally:
+        if log_handle is not None:
+            try:
+                log_handle.close()
+            except Exception:
+                pass
+
+
+def _prepare_ollama_runtime(report=None) -> str:
     """Guarantee an installed and running local Ollama before model setup.
 
-    ``ensure_runtime.ps1`` normally owns this step, but the bootstrap may be launched
-    directly during a repair.  Re-running this helper is deliberately idempotent.
+    ``report`` receives every line the setup script prints (download progress
+    included), already decoded.  Re-running this helper is deliberately idempotent.
     """
     global _OLLAMA_LAST_ERROR
     _OLLAMA_LAST_ERROR = ""
     executable = _find_ollama_executable()
     if executable and _ollama_api_ready():
         return executable
+    script_reason = ""
     if os.name == "nt":
         script = ROOT / "scripts" / "ensure_ollama.ps1"
         if script.is_file():
+            out_lines: list[str] = []
             try:
-                completed = subprocess.run(
-                    ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(script),
-                     "-InstallIfMissing", "-StartServer"],
+                process = subprocess.Popen(
+                    ["powershell", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+                     "-File", str(script), "-InstallIfMissing", "-StartServer"],
                     cwd=ROOT,
-                    capture_output=True,
-                    text=True,
-                    encoding="utf-8",
-                    errors="replace",
-                    timeout=1200,
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
                     creationflags=subprocess.CREATE_NO_WINDOW,
                 )
-                if completed.returncode != 0:
-                    # Keep the real reason instead of discarding it: a proxy, a
-                    # blocked download and an unsupported CPU all looked identical
-                    # from the outside before this.
-                    _OLLAMA_LAST_ERROR = (
-                        (completed.stderr or "").strip() or (completed.stdout or "").strip()
-                    )[-800:]
+                assert process.stdout is not None
+
+                def pump() -> None:
+                    pending = b""
+                    stream = process.stdout
+                    while True:
+                        try:
+                            chunk = stream.read1(4096) if hasattr(stream, "read1") else stream.read(4096)
+                        except Exception:
+                            break
+                        if not chunk:
+                            break
+                        lines, pending = _split_console_lines(pending + chunk)
+                        for line in lines:
+                            out_lines.append(line)
+                            if report is not None:
+                                try:
+                                    report(line)
+                                except Exception:
+                                    pass
+                    tail_lines, _ = _split_console_lines(pending + b"\n")
+                    out_lines.extend(tail_lines)
+
+                reader = threading.Thread(target=pump, daemon=True, name="eirven-ollama-setup-output")
+                reader.start()
+                # Час — с запасом на скачивание Ollama (около гигабайта) по медленной сети.
+                deadline = time.monotonic() + 3600
+                while process.poll() is None and time.monotonic() < deadline:
+                    time.sleep(0.2)
+                if process.poll() is None:
+                    process.kill()
+                    out_lines.append("EIRVEN_ERROR: подготовка Ollama не уложилась в час")
+                reader.join(timeout=10)
+                code = process.wait(timeout=30)
+                if code != 0:
+                    # Причина — одной строкой. Раньше сюда попадал сырой вывод
+                    # PowerShell в чужой кодировке, и человек видел «кракозябры».
+                    script_reason = _script_failure_reason("\n".join(out_lines), "")
             except Exception as exc:
-                _OLLAMA_LAST_ERROR = str(exc)[:800]
+                script_reason = str(exc)[:600]
     executable = _find_ollama_executable()
+    start_reason = ""
     if executable and not _ollama_api_ready():
-        try:
-            subprocess.Popen(
-                [executable, "serve"], cwd=ROOT,
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                creationflags=(subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0),
-            )
-        except Exception:
-            pass
-        deadline = time.monotonic() + 45
-        while time.monotonic() < deadline:
-            if _ollama_api_ready(.8):
-                break
-            time.sleep(.75)
-    return executable if executable and _ollama_api_ready() else ""
+        ok, win_code, message = _start_ollama_serve(executable)
+        if not ok:
+            start_reason = _OLLAMA_START_HINTS.get(win_code) or message or f"код Windows {win_code}"
+            _trace("OLLAMA_START_FAILED", code=win_code, message=message, executable=executable)
+        else:
+            deadline = time.monotonic() + 60
+            while time.monotonic() < deadline:
+                if _ollama_api_ready(.8):
+                    break
+                time.sleep(.75)
+    if executable and _ollama_api_ready():
+        return executable
+    reason = start_reason or script_reason
+    if not executable and not reason:
+        reason = "Ollama не установилась."
+    _OLLAMA_LAST_ERROR = (reason.strip() + "\n" + _ollama_advice()).strip()
+    _trace("OLLAMA_PREPARE_FAILED", reason=reason, script_reason=script_reason, start_reason=start_reason)
+    return ""
 
 
 class Bootstrap:
@@ -261,39 +415,52 @@ class Bootstrap:
         # characters and incorrectly rejected the selected voice.
         child_env["PYTHONIOENCODING"] = "utf-8"
         child_env["PYTHONUTF8"] = "1"
+        # Вывод читаем байтами и расшифровываем построчно: Python-процессы пишут в
+        # UTF-8, а PowerShell и утилиты Windows — в кодировке консоли (cp866).
         process = subprocess.Popen(
             command,
             cwd=cwd or ROOT,
             env=child_env,
+            stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            bufsize=1,
             creationflags=creationflags,
         )
         lines: list[str] = []
         deadline = time.monotonic() + timeout
         assert process.stdout is not None
+        result: dict[str, object] = {"pending": b"", "done": False}
+
+        def reader() -> None:
+            stream = process.stdout
+            pending = b""
+            while True:
+                try:
+                    chunk = stream.read1(4096) if hasattr(stream, "read1") else stream.read(4096)
+                except Exception:
+                    break
+                if not chunk:
+                    break
+                ready, pending = _split_console_lines(pending + chunk)
+                for clean in ready:
+                    lines.append(clean)
+                    self.gui.post("log", clean[-300:])
+            result["pending"] = pending
+            result["done"] = True
+
+        thread = threading.Thread(target=reader, daemon=True, name="eirven-step-output")
+        thread.start()
         while process.poll() is None:
             if time.monotonic() > deadline:
                 process.kill()
                 raise InstallerError(f"Превышено время шага: {label}")
-            line = process.stdout.readline()
-            if line:
-                clean = re.sub(r"\x1b\[[0-9;]*[A-Za-z]", "", line).strip()
-                if clean:
-                    lines.append(clean)
-                    self.gui.post("log", clean[-300:])
-            else:
-                time.sleep(0.1)
-        rest = process.stdout.read()
-        if rest:
-            lines.append(rest)
+            time.sleep(0.1)
+        thread.join(timeout=10)
+        tail, _ = _split_console_lines(bytes(result.get("pending") or b"") + b"\n")
+        lines.extend(tail)
         if process.returncode != 0:
-            raise InstallerError(f"{label} завершился с кодом {process.returncode}\n{''.join(lines)[-3000:]}")
-        return "".join(lines)
+            raise InstallerError(f"{label} завершился с кодом {process.returncode}\n{chr(10).join(lines)[-3000:]}")
+        return "\n".join(lines)
 
     def ensure_ffmpeg(self) -> None:
         """Поставить FFmpeg для монтажа видео — надёжно и без риска сорвать установку.
@@ -1045,7 +1212,8 @@ class Bootstrap:
             self.gui.post("log", f"ASR-проверка голоса пропущена: {exc}")
             return None
         marker = "EIRVEN_TTS_TRANSCRIPT="
-        transcript = output.split(marker, 1)[-1].strip().casefold() if marker in output else ""
+        rest = output.split(marker, 1)[-1].strip() if marker in output else ""
+        transcript = (rest.splitlines() or [""])[0].strip().casefold()
         normalized = re.sub(r"[^а-яёa-z0-9 ]+", " ", transcript)
         hits = sum(1 for token in ("привет", "русск", "голос", "эрви", "ирвен") if token in normalized)
         good = hits >= 2 or ("привет" in normalized and len(normalized.split()) >= 3)
@@ -1306,7 +1474,22 @@ class Bootstrap:
             self.gui.post("log", "Отдельный Chromium не нужен: desktop-agent использует браузер Windows по умолчанию")
             self.complete_step(8, "Системный браузер готов")
 
-            ollama_executable = _prepare_ollama_runtime()
+            def _ollama_report(line: str) -> None:
+                # Каждая строка подготовки Ollama — в журнал, а ход скачивания и
+                # установки — в строку состояния. Раньше этот шаг до конца молчал.
+                self.gui.post("log", line[-300:])
+                match = re.search(r"Ollama:\s+([\d.,]+)%", line)
+                if match:
+                    self.update(f"Скачиваю Ollama · {match.group(1)}%", units=0)
+                elif "переустанавливаю Ollama" in line:
+                    self.update("Переустанавливаю Ollama", units=0)
+                elif "устанавливаю Ollama" in line:
+                    self.update("Устанавливаю Ollama", units=0)
+                elif "запускаю локальный сервер Ollama" in line:
+                    self.update("Запускаю Ollama", units=0)
+
+            self.update("Проверяю Ollama", units=0)
+            ollama_executable = _prepare_ollama_runtime(report=_ollama_report)
             if not ollama_executable:
                 if _cpu_lacks_avx():
                     raise InstallerError(
@@ -1317,11 +1500,7 @@ class Bootstrap:
                         "не поможет. Нужен компьютер с процессором 2011 года или новее."
                     )
                 detail = _OLLAMA_LAST_ERROR.strip()
-                raise InstallerError(
-                    "Не удалось автоматически установить или запустить Ollama. "
-                    "Повторный запуск EIRVEN продолжит установку с уже скачанных файлов."
-                    + (f"\n\nПричина: {detail}" if detail else "")
-                )
+                raise InstallerError("Ollama не запускается. " + (detail or _ollama_advice()))
             try:
                 ollama_version = subprocess.check_output(
                     [ollama_executable, "--version"], text=True, encoding="utf-8", errors="replace", timeout=20
@@ -1647,8 +1826,16 @@ class Bootstrap:
                 self.gui.post("log", f"EIRVEN.exe ({reason}) — запуск пойдёт напрямую через .venv\\Scripts\\pythonw.exe launcher.py")
             self.complete_step(2, "Приложение готово")
             self.run(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(ROOT / "scripts" / "create_shortcut.ps1")], "Создание и проверка ярлыка", timeout=60)
-            marker = ROOT / ".installed-v2.4.0-r72-k4"
+            marker = ROOT / f".installed-v{APP_VERSION}-{APP_BUILD}"
             marker.write_text(time.strftime("%Y-%m-%d %H:%M:%S"), encoding="utf-8")
+            # Отметки прошлых сборок убираем: по ним в папке казалось, что стоит
+            # старая версия, и они сбивали с толку при разборе проблем.
+            for stale in ROOT.glob(".installed-v*"):
+                if stale.name != marker.name:
+                    try:
+                        stale.unlink()
+                    except OSError:
+                        pass
             try:
                 self.run(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(ROOT / "scripts" / "install_autostart.ps1")], "Автозапуск голосового EIRVEN", timeout=60)
             except Exception as exc:
@@ -1665,11 +1852,11 @@ class Bootstrap:
         state_file.parent.mkdir(parents=True, exist_ok=True)
         self.done_units = 0.0
         try:
-            state_file.write_text(json.dumps({"version": "2.4.0", "build": "r72-k4", "status": "running", "updated": time.time()}), encoding="utf-8")
+            state_file.write_text(json.dumps({"version": APP_VERSION, "build": APP_BUILD, "status": "running", "updated": time.time()}), encoding="utf-8")
             self.install_once()
             state_file.unlink(missing_ok=True)
         except Exception as exc:
-            state_file.write_text(json.dumps({"version": "2.4.0", "build": "r72-k4", "status": "failed", "error": str(exc)[-2000:], "updated": time.time()}, ensure_ascii=False), encoding="utf-8")
+            state_file.write_text(json.dumps({"version": APP_VERSION, "build": APP_BUILD, "status": "failed", "error": str(exc)[-2000:], "updated": time.time()}, ensure_ascii=False), encoding="utf-8")
             self.gui.post("error", str(exc))
 
     def launch(self) -> None:
@@ -1706,7 +1893,8 @@ class InstallerGUI:
         except Exception:
             pass
         self.root = tk.Tk()
-        self.root.title("Установка Эрви")
+        # Номер сборки — прямо в заголовке: сразу видно, какая версия ставится.
+        self.root.title(f"Установка Эрви · {APP_BUILD}")
         self.root.geometry("760x660")
         self.root.minsize(700, 610)
         self.root.resizable(True, True)
@@ -1742,19 +1930,30 @@ class InstallerGUI:
         self.orb.pack(pady=(0, 0))
         self._orb_phase = 0.0
         self._orb_texture = None
+        # Готовая картинка сферы: Tk показывает PNG сам, без PIL. На новой машине
+        # установщик работает на только что поставленном «чистом» Python, где PIL
+        # нет, — и вместо сферы там рисовалась надпись «E I R V E N», как в старых
+        # версиях. Отрисовка через PIL осталась запасным вариантом.
         try:
-            from PIL import Image, ImageDraw, ImageFilter, ImageTk
-            # The same Retina source is used by the website, Windows UI and Android.
-            # The canvas adds only the two canonical gem eyes; no nested pupils exist.
-            source = Image.open(ROOT / "src" / "eirven_ai" / "web" / "eirven-orb.png").convert("RGBA")
-            pad = int(min(source.size) * .075)
-            source = source.crop((pad, pad, source.width - pad, source.height - pad)).resize((174, 174), Image.LANCZOS)
-            alpha = Image.new("L", source.size, 0)
-            ImageDraw.Draw(alpha).ellipse((2, 2, 172, 172), fill=255)
-            source.putalpha(alpha.filter(ImageFilter.GaussianBlur(1.4)))
-            self._orb_texture = ImageTk.PhotoImage(source)
+            orb_png = ROOT / "assets" / "installer-orb.png"
+            if orb_png.is_file():
+                self._orb_texture = tk.PhotoImage(file=str(orb_png))
         except Exception:
             self._orb_texture = None
+        if self._orb_texture is None:
+            try:
+                from PIL import Image, ImageDraw, ImageFilter, ImageTk
+                # The same Retina source is used by the website, Windows UI and Android.
+                # The canvas adds only the two canonical gem eyes; no nested pupils exist.
+                source = Image.open(ROOT / "src" / "eirven_ai" / "web" / "eirven-orb.png").convert("RGBA")
+                pad = int(min(source.size) * .075)
+                source = source.crop((pad, pad, source.width - pad, source.height - pad)).resize((174, 174), Image.LANCZOS)
+                alpha = Image.new("L", source.size, 0)
+                ImageDraw.Draw(alpha).ellipse((2, 2, 172, 172), fill=255)
+                source.putalpha(alpha.filter(ImageFilter.GaussianBlur(1.4)))
+                self._orb_texture = ImageTk.PhotoImage(source)
+            except Exception:
+                self._orb_texture = None
         self.animate_orb()
 
         tk.Label(
@@ -1881,7 +2080,7 @@ class InstallerGUI:
             pass
 
     @staticmethod
-    def _error_tail(value: object, limit: int = 460) -> str:
+    def _error_tail(value: object, limit: int = 620) -> str:
         text = str(value or "").replace("\r", "").strip()
         if not text:
             return "Неизвестная ошибка"

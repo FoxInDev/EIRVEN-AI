@@ -1,9 +1,4 @@
-﻿# EIRVEN AI — 2.4.0
-# Copyright (c) 2026 Даниил Павлов. Все права защищены. / All rights reserved.
-# Лицензия: EIRVEN Non-Commercial License — см. файл LICENSE.
-# Обязательна видимая подпись «На базе Эрви». Скрывать её запрещено (см. LICENSE).
-# EIRVEN-LICENSE-HEADER
-$ErrorActionPreference = 'Stop'
+﻿$ErrorActionPreference = 'Stop'
 $Root = Split-Path -Parent $PSScriptRoot
 $PythonW = Join-Path $Root '.venv\Scripts\pythonw.exe'
 if (-not (Test-Path $PythonW)) { $PythonW = Join-Path $Root '.venv\Scripts\python.exe' }

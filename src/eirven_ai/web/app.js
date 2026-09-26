@@ -1,10 +1,3 @@
-/*
- * EIRVEN AI — 2.4.0
- * Copyright (c) 2026 Даниил Павлов. Все права защищены. / All rights reserved.
- * Лицензия: EIRVEN Non-Commercial License — см. файл LICENSE.
- * Обязательна видимая подпись «На базе Эрви». Скрывать её запрещено (см. LICENSE).
- * EIRVEN-LICENSE-HEADER
- */
 const $=s=>document.querySelector(s), $$=s=>Array.from(document.querySelectorAll(s));
 const state={identity:null,style:null,preferences:null,mail:null,telegram:null,mobile:null,camera:null,runtime:{},conversationId:localStorage.getItem('eirven_conversation')||null,sessionRestored:false,job:null,view:'home',runtimeAction:{},chatBusy:false,chatController:null,chatCancelled:false,chatTimedOut:false,chatPending:null,chatQueued:false,attachments:[],models:null,mailSetupOpen:false,telegramSetupOpen:false};
 function apiErrorText(detail,raw,status){

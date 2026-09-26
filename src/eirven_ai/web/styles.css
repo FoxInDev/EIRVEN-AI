@@ -1,10 +1,3 @@
-/*
- * EIRVEN AI — 2.4.0
- * Copyright (c) 2026 Даниил Павлов. Все права защищены. / All rights reserved.
- * Лицензия: EIRVEN Non-Commercial License — см. файл LICENSE.
- * Обязательна видимая подпись «На базе Эрви». Скрывать её запрещено (см. LICENSE).
- * EIRVEN-LICENSE-HEADER
- */
 /* Bundled Noto Color Emoji 2.051 is OFL-1.1 software, not an Apple asset. */
 @font-face{font-family:"Eirven Color Emoji";src:url("/ui/NotoColorEmoji-v2.051.ttf") format("truetype"),url("https://raw.githubusercontent.com/googlefonts/noto-emoji/v2.051/fonts/NotoColorEmoji.ttf") format("truetype");font-style:normal;font-weight:400;font-display:swap}
 :root{--bg:#070914;--panel:rgba(10,14,30,.58);--panel2:rgba(18,24,49,.62);--line:rgba(158,186,255,.16);--line2:rgba(129,225,255,.4);--text:#f5f7ff;--muted:#8d98b8;--cyan:#61e9ff;--blue:#4d8cff;--violet:#8b67ff;--pink:#ff75c8;--voice-level:.04;--arm:0}
