@@ -1,0 +1,27 @@
+# Эрви — не коммитить данные, секреты и тяжёлые файлы
+.venv/
+data/
+logs/
+models/
+ollama-models/
+generated/
+video/
+_old_files_backup/
+build/
+dist/
+pyinstaller-hooks/
+.launcher-update/
+src/eirven_ai.egg-info/
+__pycache__/
+*.py[cod]
+*.exe
+*.spec
+*.log
+loggg*.txt
+.env
+*.key
+*.session
+*.session-journal
+storage.json
+.installed-v*
+.payload*
